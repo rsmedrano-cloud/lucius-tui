@@ -4,7 +4,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
-use ratatui::{
+use ratatui::{ // pokemon reference? 
     prelude::{CrosstermBackend, Style, Terminal, Color, Modifier},
     layout::{Constraint, Direction, Layout},
     text::Text,
