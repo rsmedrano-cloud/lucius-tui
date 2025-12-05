@@ -1,42 +1,43 @@
-# Lucius TUI
+# Lucius CLI (Rust)
 
-A terminal user interface for interacting with Ollama models, built with Rust.
+A blazing fast, lightweight (sub-20MB RAM) TUI for local LLMs, written in Rust.
 
-## Features
+## Running the Executable
 
-- Real-time streaming of responses from Ollama.
-- Interactive chat interface.
-- Settings screen to configure the Ollama URL and select models.
-- Markdown rendering of chat history.
-- Mouse and keyboard scrolling of chat history.
-- Interruptible responses with the `Esc` key.
+After building the project in release mode, you can find the executable at `target/release/lucius`.
 
-## How to Run
+To run the application directly:
 
-1. Make sure you have an Ollama instance running.  
-2. Clone the repository.  
-3. Run the application with `cargo run`.
+```bash
+./target/release/lucius
+```
 
-## Feel the Vibe
+### Making it Globally Accessible
 
-Lucius TUI walks into a bar and orders an Ollama model.  
-The bartender asks:  
-> **“Do you want it *streaming* or *on the rocks*?”**
+To run `lucius` from any directory by simply typing `lucius`, you need to add its location to your system's `PATH`.
 
-Lucius replies:  
-> **“Streaming, please. I like my responses flowing… kind of like my segfaults when I forget to run `cargo check`.”**
+**Option 1: Copy to a PATH directory (Recommended for convenience)**
 
-The bartender continues:  
-> **“And how should I serve it?”**
+```bash
+sudo cp target/release/lucius /usr/local/bin/
+```
 
-Lucius winks:  
-> **“With Markdown, of course. I like taking notes on the go… even if they won't stop scrolling afterwards.”**
+After this, you can just type `lucius` in your terminal.
 
-Finally, the bartender asks:  
-> **“Need to interrupt at any moment?”**
+**Option 2: Add to your shell's PATH (Temporary or Permanent)**
 
-Lucius smirks:  
-> **“Yes. If things get too heavy, I’ll just hit ESC… the same way I escape from my responsibilities.”**
+*   **Temporarily (for current session):**
+    ```bash
+    export PATH="/path/to/your/target/release:$PATH"
+    ```
 
-Everyone at the bar laughs…  
-except the main thread — still waiting for the lock.
+*   **Permanently (add to shell configuration):**
+    Edit your shell's configuration file (e.g., `~/.bashrc`, `~/.zshrc`, `~/.profile`) and add the `export PATH="..."` line. Then, `source` the file (e.g., `source ~/.bashrc`) or restart your terminal.
+
+    Example for `~/.bashrc`:
+    ```bash
+    echo 'export PATH="/home/rodrigo/your/target/release:$PATH"' >> ~/.bashrc
+    source ~/.bashrc
+    ```
+
+**Note:** If you are running `lucius` from inside the `lucius` project directory, you can also use `cargo run --release`.
