@@ -19,6 +19,21 @@ use termimad::MadSkin;
 
 mod context;
 
+const HELP_MESSAGE: &str = r#"
+--- Help ---
+Ctrl+H: Toggle Help
+Ctrl+S: Toggle Settings
+Ctrl+Q: Quit
+Ctrl+L: Clear Chat
+Esc: Interrupt current stream (if any)
+Mouse Scroll: Scroll chat history
+Enter: Send message (Chat mode), Select model (Settings mode)
+Tab: Switch focus (Settings mode)
+R: Refresh models (Settings mode)
+Esc: Go to Chat (Settings mode)
+-----------------
+"#;
+
 #[derive(Serialize)]
 struct ChatRequest {
     model: String,
@@ -47,6 +62,7 @@ struct ChatResponse {
 enum AppMode {
     Chat,
     Settings,
+    Help,
 }
 
 enum Focus {
@@ -330,9 +346,26 @@ async fn main() -> io::Result<()> {
 
                     frame.render_widget(&app.textarea, chunks[2]); // Shifted to chunks[2]
                     
-                    let help = Paragraph::new("Press ctrl+s to go to settings, ctrl+q to quit, ctrl+l to clear chat, mouse scroll up/down to scroll, esc to interrupt")
-                        .style(Style::default().fg(Color::Yellow));
-                    frame.render_widget(help, chunks[3]); // Shifted to chunks[3]
+                    // Display current directory and active model
+                    let bottom_chunks = Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                        .split(chunks[3]); // Use the last chunk for this
+
+                    let current_dir = std::env::current_dir()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|_| "Error getting dir".to_string());
+                    let dir_paragraph = Paragraph::new(format!("Dir: {}", current_dir))
+                        .style(Style::default().fg(Color::Blue));
+                    frame.render_widget(dir_paragraph, bottom_chunks[0]);
+
+                    let active_model_name = app.models.items.get(app.models.state.selected().unwrap_or(0))
+                        .map(|model| model.name.clone())
+                        .unwrap_or_else(|| "No model selected".to_string());
+                    let model_paragraph = Paragraph::new(format!("Model: {}", active_model_name))
+                        .alignment(ratatui::layout::Alignment::Right)
+                        .style(Style::default().fg(Color::LightCyan));
+                    frame.render_widget(model_paragraph, bottom_chunks[1]);
                 }
                 AppMode::Settings => {
                     let chunks = Layout::default()
@@ -365,9 +398,16 @@ async fn main() -> io::Result<()> {
 
                     frame.render_stateful_widget(list, chunks[2], &mut app.models.state);
 
-                    let help = Paragraph::new("Use TAB to switch focus, c to go to chat, r to refresh models, Enter to select, q to quit")
-                        .style(Style::default().fg(Color::Yellow));
-                    frame.render_widget(help, chunks[3]);
+                    // Removed help paragraph from here
+                }
+                AppMode::Help => {
+                    let help_block = Block::default()
+                        .title("Help")
+                        .borders(Borders::ALL);
+                    let help_paragraph = Paragraph::new(HELP_MESSAGE)
+                        .wrap(Wrap { trim: true })
+                        .block(help_block);
+                    frame.render_widget(help_paragraph, area);
                 }
             }
         })?;
@@ -376,81 +416,94 @@ async fn main() -> io::Result<()> {
             match event::read()? {
                 Event::Key(key) => {
                     if key.kind == crossterm::event::KeyEventKind::Press {
-                        match app.mode {
-                            AppMode::Chat => {
-                                if key.modifiers == KeyModifiers::CONTROL {
-                                    match key.code {
-                                        KeyCode::Char('s') => {
-                                            app.mode = AppMode::Settings;
-                                            let url = app.url_editor.lines().join("");
-                                            app.status = ping_ollama(url).await;
+                        // Handle global Ctrl+H for help toggle
+                        if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('h') {
+                            app.mode = match app.mode {
+                                AppMode::Help => AppMode::Chat, // Go back to chat from help
+                                _ => AppMode::Help, // Go to help from any other mode
+                            };
+                        } else { // Handle other keys based on current mode
+                            match app.mode {
+                                AppMode::Chat => {
+                                    if key.modifiers == KeyModifiers::CONTROL {
+                                        match key.code {
+                                            KeyCode::Char('s') => {
+                                                app.mode = AppMode::Settings;
+                                                let url = app.url_editor.lines().join("");
+                                                app.status = ping_ollama(url).await;
+                                            }
+                                            KeyCode::Char('q') => should_quit = true,
+                                            KeyCode::Char('l') => app.chat_history.clear(),
+                                            _ => {}
                                         }
-                                        KeyCode::Char('q') => should_quit = true,
-                                        KeyCode::Char('l') => app.chat_history.clear(),
-                                        _ => {}
-                                    }
-                                } else {
-                                    match key.code {
-                                        KeyCode::Esc => {
-                                            let _ = app.interrupt_tx.send(true);
-                                        }
-                                        KeyCode::Enter => {
-                                            let input = app.textarea.lines().join("\n");
-                                            let model = app.models.items[app.models.state.selected().unwrap_or(0)].name.clone();
-                                            let url = app.url_editor.lines().join("");
-                                            app.chat_history.push(format!("You: {}", input));
-                                            app.scroll = u16::MAX;
-                                            let tx = app.chat_tx.clone();
-                                            let interrupt_rx = app.interrupt_rx.clone();
-                                            let _ = app.interrupt_tx.send(false);
-                                            let lucius_context = app.lucius_context.clone();
-                                            tokio::spawn(async move {
-                                                if let Err(e) = chat_stream(input, model, url, tx.clone(), interrupt_rx, lucius_context).await {
-                                                    log::error!("Error in chat_stream spawn: {}", e);
-                                                    if tx.send(format!("Error: {}", e)).await.is_err() {
-                                                        log::error!("Failed to send error message to channel");
+                                    } else {
+                                        match key.code {
+                                            KeyCode::Esc => {
+                                                let _ = app.interrupt_tx.send(true);
+                                            }
+                                            KeyCode::Enter => {
+                                                let input = app.textarea.lines().join("\n");
+                                                let model = app.models.items[app.models.state.selected().unwrap_or(0)].name.clone();
+                                                let url = app.url_editor.lines().join("");
+                                                app.chat_history.push(format!("You: {}", input));
+                                                app.scroll = u16::MAX;
+                                                let tx = app.chat_tx.clone();
+                                                let interrupt_rx = app.interrupt_rx.clone();
+                                                let _ = app.interrupt_tx.send(false);
+                                                let lucius_context = app.lucius_context.clone();
+                                                tokio::spawn(async move {
+                                                    if let Err(e) = chat_stream(input, model, url, tx.clone(), interrupt_rx, lucius_context).await {
+                                                        log::error!("Error in chat_stream spawn: {}", e);
+                                                        if tx.send(format!("Error: {}", e)).await.is_err() {
+                                                            log::error!("Failed to send error message to channel");
+                                                        }
                                                     }
-                                                }
-                                            });
-                                            let mut textarea = TextArea::default();
-                                            textarea.set_placeholder_text("Ask me anything...");
-                                            textarea.set_block(
-                                                Block::default()
-                                                    .borders(Borders::ALL)
-                                                    .title("Input"),
-                                            );
-                                            app.textarea = textarea;
-                                        }
-                                        _ => {
-                                            app.textarea.input(Input::from(key));
+                                                });
+                                                let mut textarea = TextArea::default();
+                                                textarea.set_placeholder_text("Ask me anything...");
+                                                textarea.set_block(
+                                                    Block::default()
+                                                        .borders(Borders::ALL)
+                                                        .title("Input"),
+                                                );
+                                                app.textarea = textarea;
+                                            }
+                                            _ => {
+                                                app.textarea.input(Input::from(key));
+                                            }
                                         }
                                     }
                                 }
-                            }
-                            AppMode::Settings => match app.focus {
-                                Focus::Url => match key.code {
-                                    KeyCode::Tab => app.focus = Focus::Models,
-                                    _ => {
-                                        app.url_editor.input(Input::from(key));
-                                    }
+                                AppMode::Settings => match app.focus {
+                                    Focus::Url => match key.code {
+                                        KeyCode::Tab => app.focus = Focus::Models,
+                                        _ => {
+                                            app.url_editor.input(Input::from(key));
+                                        }
+                                    },
+                                    Focus::Models => match key.code {
+                                        KeyCode::Char('q') => should_quit = true,
+                                        KeyCode::Esc => app.mode = AppMode::Chat,
+                                        KeyCode::Down => app.models.next(),
+                                        KeyCode::Up => app.models.previous(),
+                                        KeyCode::Tab => app.focus = Focus::Url,
+                                        KeyCode::Char('r') => {
+                                            let url = app.url_editor.lines().join("");
+                                            let models = fetch_models(url).await.unwrap_or_else(|_| vec![]);
+                                            app.models.items = models;
+                                        }
+                                        KeyCode::Enter => {
+                                            app.mode = AppMode::Chat;
+                                        }
+                                        _ => {}
+                                    },
                                 },
-                                Focus::Models => match key.code {
-                                    KeyCode::Char('q') => should_quit = true,
-                                    KeyCode::Char('c') => app.mode = AppMode::Chat,
-                                    KeyCode::Down => app.models.next(),
-                                    KeyCode::Up => app.models.previous(),
-                                    KeyCode::Tab => app.focus = Focus::Url,
-                                    KeyCode::Char('r') => {
-                                        let url = app.url_editor.lines().join("");
-                                        let models = fetch_models(url).await.unwrap_or_else(|_| vec![]);
-                                        app.models.items = models;
-                                    }
-                                    KeyCode::Enter => {
+                                AppMode::Help => {
+                                    if key.code == KeyCode::Esc {
                                         app.mode = AppMode::Chat;
                                     }
-                                    _ => {}
-                                },
-                            },
+                                }
+                            }
                         }
                     }
                 }
