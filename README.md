@@ -18,6 +18,15 @@ When the application starts, it traverses parent directories from its current wo
     *   The current working directory (bottom-left).
     *   The currently active model (bottom-right).
 
+## Requirements
+
+*   **Rust Toolchain**: This project requires a Rust toolchain version `1.70.0` or newer. It is recommended to use `rustup` to manage your Rust installations:
+    ```bash
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+    rustup update
+    ```
+    You can check your Rust version with `rustc --version`.
+
 ## Running the Executable
 
 After building the project in release mode, you can find the executable at `target/release/lucius`.
