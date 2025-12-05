@@ -2,6 +2,11 @@
 
 A blazing fast, lightweight (sub-20MB RAM) TUI for local LLMs, written in Rust.
 
+## Context Engine (LUCIUS.md)
+
+Lucius can load a `LUCIUS.md` file to provide system-level context to the LLM.
+When the application starts, it traverses parent directories from its current working directory, searching for a file named `LUCIUS.md`. If found, its content is automatically loaded and sent as a system message with each chat request to the LLM. This allows you to "prime" the model with specific instructions, persona, or common information relevant to your project or task.
+
 ## Running the Executable
 
 After building the project in release mode, you can find the executable at `target/release/lucius`.

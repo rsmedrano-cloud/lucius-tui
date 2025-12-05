@@ -17,11 +17,15 @@ use tokio::sync::{mpsc, watch};
 use tui_textarea::{Input, TextArea};
 use termimad::MadSkin;
 
+mod context;
+
 #[derive(Serialize)]
 struct ChatRequest {
     model: String,
     prompt: String,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system: Option<String>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -105,6 +109,7 @@ struct App<'a> {
     interrupt_rx: watch::Receiver<bool>,
     status: bool,
     scroll: u16,
+    lucius_context: Option<String>,
 }
 
 impl<'a> App<'a> {
@@ -124,6 +129,13 @@ impl<'a> App<'a> {
         );
         let (chat_tx, chat_rx) = mpsc::channel(100);
         let (interrupt_tx, interrupt_rx) = watch::channel(false);
+        let lucius_context = context::load_lucius_context(); // Load context
+        if let Some(ctx) = &lucius_context {
+            log::info!("Loaded LUCIUS.md context: {} bytes", ctx.len());
+        } else {
+            log::info!("No LUCIUS.md context found.");
+        }
+
         App {
             mode: AppMode::Chat,
             models: StatefulList::new(models),
@@ -137,6 +149,7 @@ impl<'a> App<'a> {
             interrupt_rx,
             status: false,
             scroll: 0,
+            lucius_context,
         }
     }
 
@@ -162,12 +175,14 @@ async fn chat_stream(
     url: String,
     tx: mpsc::Sender<String>,
     mut interrupt_rx: watch::Receiver<bool>,
+    system_message: Option<String>,
 ) -> Result<(), reqwest::Error> {
     let client = reqwest::Client::new();
     let req = ChatRequest {
         model,
         prompt,
         stream: true, // Enable streaming
+        system: system_message,
     };
     let mut res = client
         .post(format!("{}/api/generate", url))
@@ -281,7 +296,7 @@ async fn main() -> io::Result<()> {
                 AppMode::Chat => {
                     let chunks = Layout::default()
                         .direction(Direction::Vertical)
-                        .constraints([Constraint::Min(0), Constraint::Length(3), Constraint::Length(1)])
+                        .constraints([Constraint::Min(0), Constraint::Length(1), Constraint::Length(3), Constraint::Length(1)])
                         .split(area);
                     
                     let history_text: String = app.chat_history.join("\n");
@@ -305,11 +320,19 @@ async fn main() -> io::Result<()> {
                         .block(Block::default().title("Conversation").borders(Borders::ALL));
                     frame.render_widget(history, chunks[0]);
 
-                    frame.render_widget(&app.textarea, chunks[1]);
+                    // Status line
+                    let lucius_md_count = if app.lucius_context.is_some() { 1 } else { 0 };
+                    let mcp_server_count = 0; // Placeholder for now
+                    let status_text = format!("using: {} LUCIUS.md | {} MCP server", lucius_md_count, mcp_server_count);
+                    let status_line = Paragraph::new(status_text)
+                        .style(Style::default().fg(Color::DarkGray));
+                    frame.render_widget(status_line, chunks[1]); // Render in new chunk
+
+                    frame.render_widget(&app.textarea, chunks[2]); // Shifted to chunks[2]
                     
                     let help = Paragraph::new("Press ctrl+s to go to settings, ctrl+q to quit, ctrl+l to clear chat, mouse scroll up/down to scroll, esc to interrupt")
                         .style(Style::default().fg(Color::Yellow));
-                    frame.render_widget(help, chunks[2]);
+                    frame.render_widget(help, chunks[3]); // Shifted to chunks[3]
                 }
                 AppMode::Settings => {
                     let chunks = Layout::default()
@@ -380,8 +403,9 @@ async fn main() -> io::Result<()> {
                                             let tx = app.chat_tx.clone();
                                             let interrupt_rx = app.interrupt_rx.clone();
                                             let _ = app.interrupt_tx.send(false);
+                                            let lucius_context = app.lucius_context.clone();
                                             tokio::spawn(async move {
-                                                if let Err(e) = chat_stream(input, model, url, tx.clone(), interrupt_rx).await {
+                                                if let Err(e) = chat_stream(input, model, url, tx.clone(), interrupt_rx, lucius_context).await {
                                                     log::error!("Error in chat_stream spawn: {}", e);
                                                     if tx.send(format!("Error: {}", e)).await.is_err() {
                                                         log::error!("Failed to send error message to channel");
