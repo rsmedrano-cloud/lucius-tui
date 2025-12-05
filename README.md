@@ -61,7 +61,7 @@ After this, you can just type `lucius` in your terminal.
 
     Example for `~/.bashrc`:
     ```bash
-    echo 'export PATH="/home/rodrigo/your/target/release:$PATH"' >> ~/.bashrc
+    echo 'export PATH="/path/to/your/target/release:$PATH"' >> ~/.bashrc
     source ~/.bashrc
     ```
 
