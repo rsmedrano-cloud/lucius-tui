@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use simplelog::{Config, LevelFilter, WriteLogger};
 use std::fs::File;
 use tokio::sync::{mpsc, watch};
-use tui_textarea::TextArea;
+use tui_textarea::{Input, TextArea};
 use termimad::MadSkin;
 
 #[derive(Serialize)]
@@ -101,9 +101,10 @@ struct App<'a> {
     focus: Focus,
     chat_rx: mpsc::Receiver<String>,
     chat_tx: mpsc::Sender<String>,
-    scroll: u16,
     interrupt_tx: watch::Sender<bool>,
     interrupt_rx: watch::Receiver<bool>,
+    status: bool,
+    scroll: u16,
 }
 
 impl<'a> App<'a> {
@@ -132,22 +133,28 @@ impl<'a> App<'a> {
             focus: Focus::Models,
             chat_rx,
             chat_tx,
-            scroll: 0,
             interrupt_tx,
             interrupt_rx,
+            status: false,
+            scroll: 0,
         }
     }
 
     fn scroll_up(&mut self) {
-        if self.scroll > 0 {
-            self.scroll -= 1;
-        }
+        self.scroll = self.scroll.saturating_sub(1);
     }
 
     fn scroll_down(&mut self) {
-        self.scroll += 1;
+        self.scroll = self.scroll.saturating_add(1);
     }
 }
+
+async fn ping_ollama(url: String) -> bool {
+    let client = reqwest::Client::new();
+    let res = client.get(url).send().await;
+    res.is_ok()
+}
+
 
 async fn chat_stream(
     prompt: String,
@@ -185,6 +192,9 @@ async fn chat_stream(
                                 }
                             }
                             if let Some(true) = stream_res.done {
+                                if tx.send("<END_OF_STREAM>".to_string()).await.is_err() {
+                                    log::error!("Failed to send end of stream message to channel");
+                                }
                                 return Ok(()); // End of stream
                             }
                         } else {
@@ -230,6 +240,7 @@ async fn main() -> io::Result<()> {
 
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
+    stdout().execute(event::EnableMouseCapture)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
 
     let models = fetch_models("http://192.168.1.42:11434".to_string()).await.unwrap_or_else(|_| vec![]);
@@ -247,19 +258,25 @@ async fn main() -> io::Result<()> {
                         *last = format!("Lucius: {}", words.join(" "));
                     }
                 }
-            } else if let Some(last) = app.chat_history.last_mut() {
-                if last.starts_with("Lucius: ") {
-                    last.push_str(&msg);
+            } else { // Message is not <END_OF_STREAM>
+                if let Some(last) = app.chat_history.last_mut() {
+                    if last.starts_with("Lucius: ") {
+                        last.push_str(&msg);
+                    } else {
+                        // Last message was not from Lucius, or it was a full message.
+                        // Start a new Lucius response.
+                        app.chat_history.push(format!("Lucius: {}", msg));
+                    }
                 } else {
+                    // Chat history is empty, start a new Lucius response.
                     app.chat_history.push(format!("Lucius: {}", msg));
                 }
-            } else {
-                app.chat_history.push(format!("Lucius: {}", msg));
             }
+            app.scroll = u16::MAX; // Auto-scroll to bottom
         }
 
         terminal.draw(|frame| {
-            let area = frame.size();
+            let area = frame.area();
             match app.mode {
                 AppMode::Chat => {
                     let chunks = Layout::default()
@@ -269,16 +286,28 @@ async fn main() -> io::Result<()> {
                     
                     let history_text: String = app.chat_history.join("\n");
                     let markdown_text = MadSkin::default().term_text(&history_text).to_string();
+                    
+                    let chat_area_height = chunks[0].height as usize;
+                    let num_lines_in_history = markdown_text.lines().count();
+                    
+                    let max_scroll_offset = if num_lines_in_history > chat_area_height {
+                        (num_lines_in_history - chat_area_height) as u16
+                    } else {
+                        0
+                    };
+
+                    // Clamp app.scroll to valid range
+                    app.scroll = app.scroll.min(max_scroll_offset);
+                    
                     let history = Paragraph::new(Text::raw(markdown_text))
                         .wrap(Wrap { trim: true })
-                        .scroll((app.scroll, 0))
+                        .scroll((app.scroll, 0)) // Use app.scroll here
                         .block(Block::default().title("Conversation").borders(Borders::ALL));
                     frame.render_widget(history, chunks[0]);
 
-                    let textarea_widget = app.textarea.widget();
-                    frame.render_widget(textarea_widget, chunks[1]);
+                    frame.render_widget(&app.textarea, chunks[1]);
                     
-                    let help = Paragraph::new("Press ctrl+s to go to settings, ctrl+q to quit, ctrl+u/d to scroll, esc to interrupt")
+                    let help = Paragraph::new("Press ctrl+s to go to settings, ctrl+q to quit, ctrl+l to clear chat, mouse scroll up/down to scroll, esc to interrupt")
                         .style(Style::default().fg(Color::Yellow));
                     frame.render_widget(help, chunks[2]);
                 }
@@ -293,11 +322,15 @@ async fn main() -> io::Result<()> {
                         ])
                         .split(area);
 
-                    let url_widget = app.url_editor.widget();
-                    frame.render_widget(url_widget, chunks[0]);
+                    frame.render_widget(&app.url_editor, chunks[0]);
 
-                    let status = Paragraph::new("Status: Connected")
-                        .style(Style::default().fg(Color::Green))
+                    let (status_text, status_color) = if app.status {
+                        ("Status: Connected", Color::Green)
+                    } else {
+                        ("Status: Disconnected", Color::Red)
+                    };
+                    let status = Paragraph::new(status_text)
+                        .style(Style::default().fg(status_color))
                         .block(Block::default().title("Status").borders(Borders::ALL));
                     frame.render_widget(status, chunks[1]);
                     
@@ -317,89 +350,101 @@ async fn main() -> io::Result<()> {
         })?;
 
         if event::poll(std::time::Duration::from_millis(50))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == crossterm::event::KeyEventKind::Press {
-                    match app.mode {
-                        AppMode::Chat => {
-                            if key.modifiers == KeyModifiers::CONTROL {
-                                match key.code {
-                                    KeyCode::Char('s') => app.mode = AppMode::Settings,
-                                    KeyCode::Char('q') => should_quit = true,
-                                    KeyCode::Char('u') => app.scroll_up(),
-                                    KeyCode::Char('d') => app.scroll_down(),
-                                    _ => {}
-                                }
-                            } else {
-                                match key.code {
-                                    KeyCode::Esc => {
-                                        let _ = app.interrupt_tx.send(true);
+            match event::read()? {
+                Event::Key(key) => {
+                    if key.kind == crossterm::event::KeyEventKind::Press {
+                        match app.mode {
+                            AppMode::Chat => {
+                                if key.modifiers == KeyModifiers::CONTROL {
+                                    match key.code {
+                                        KeyCode::Char('s') => {
+                                            app.mode = AppMode::Settings;
+                                            let url = app.url_editor.lines().join("");
+                                            app.status = ping_ollama(url).await;
+                                        }
+                                        KeyCode::Char('q') => should_quit = true,
+                                        KeyCode::Char('l') => app.chat_history.clear(),
+                                        _ => {}
                                     }
-                                    KeyCode::Enter => {
-                                        let input = app.textarea.lines().join("\n");
-                                        let model = app.models.items[app.models.state.selected().unwrap_or(0)].name.clone();
-                                        let url = app.url_editor.lines().join("");
-                                        app.chat_history.push(format!("You: {}", input));
-                                        let tx = app.chat_tx.clone();
-                                        let interrupt_rx = app.interrupt_rx.clone();
-                                        let _ = app.interrupt_tx.send(false);
-                                        tokio::spawn(async move {
-                                            if let Err(e) = chat_stream(input, model, url, tx.clone(), interrupt_rx).await {
-                                                log::error!("Error in chat_stream spawn: {}", e);
-                                                if tx.send(format!("Error: {}", e)).await.is_err() {
-                                                    log::error!("Failed to send error message to channel");
+                                } else {
+                                    match key.code {
+                                        KeyCode::Esc => {
+                                            let _ = app.interrupt_tx.send(true);
+                                        }
+                                        KeyCode::Enter => {
+                                            let input = app.textarea.lines().join("\n");
+                                            let model = app.models.items[app.models.state.selected().unwrap_or(0)].name.clone();
+                                            let url = app.url_editor.lines().join("");
+                                            app.chat_history.push(format!("You: {}", input));
+                                            app.scroll = u16::MAX;
+                                            let tx = app.chat_tx.clone();
+                                            let interrupt_rx = app.interrupt_rx.clone();
+                                            let _ = app.interrupt_tx.send(false);
+                                            tokio::spawn(async move {
+                                                if let Err(e) = chat_stream(input, model, url, tx.clone(), interrupt_rx).await {
+                                                    log::error!("Error in chat_stream spawn: {}", e);
+                                                    if tx.send(format!("Error: {}", e)).await.is_err() {
+                                                        log::error!("Failed to send error message to channel");
+                                                    }
                                                 }
-                                            }
-                                        });
-                                        let mut textarea = TextArea::default();
-                                        textarea.set_placeholder_text("Ask me anything...");
-                                        textarea.set_block(
-                                            Block::default()
-                                                .borders(Borders::ALL)
-                                                .title("Input"),
-                                        );
-                                        app.textarea = textarea;
-                                    }
-                                    _ => {
-                                        app.textarea.input(key);
+                                            });
+                                            let mut textarea = TextArea::default();
+                                            textarea.set_placeholder_text("Ask me anything...");
+                                            textarea.set_block(
+                                                Block::default()
+                                                    .borders(Borders::ALL)
+                                                    .title("Input"),
+                                            );
+                                            app.textarea = textarea;
+                                        }
+                                        _ => {
+                                            app.textarea.input(Input::from(key));
+                                        }
                                     }
                                 }
                             }
+                            AppMode::Settings => match app.focus {
+                                Focus::Url => match key.code {
+                                    KeyCode::Tab => app.focus = Focus::Models,
+                                    _ => {
+                                        app.url_editor.input(Input::from(key));
+                                    }
+                                },
+                                Focus::Models => match key.code {
+                                    KeyCode::Char('q') => should_quit = true,
+                                    KeyCode::Char('c') => app.mode = AppMode::Chat,
+                                    KeyCode::Down => app.models.next(),
+                                    KeyCode::Up => app.models.previous(),
+                                    KeyCode::Tab => app.focus = Focus::Url,
+                                    KeyCode::Char('r') => {
+                                        let url = app.url_editor.lines().join("");
+                                        let models = fetch_models(url).await.unwrap_or_else(|_| vec![]);
+                                        app.models.items = models;
+                                    }
+                                    KeyCode::Enter => {
+                                        app.mode = AppMode::Chat;
+                                    }
+                                    _ => {}
+                                },
+                            },
                         }
-                        AppMode::Settings => match app.focus {
-                            Focus::Url => match key.code {
-                                KeyCode::Tab => app.focus = Focus::Models,
-                                _ => {
-                                    app.url_editor.input(key);
-                                }
-                            },
-                            Focus::Models => match key.code {
-                                KeyCode::Char('q') => should_quit = true,
-                                KeyCode::Char('c') => app.mode = AppMode::Chat,
-                                KeyCode::Down => app.models.next(),
-                                KeyCode::Up => app.models.previous(),
-                                KeyCode::Tab => app.focus = Focus::Url,
-                                KeyCode::Char('r') => {
-                                    let url = app.url_editor.lines().join("");
-                                    let models = fetch_models(url).await.unwrap_or_else(|_| vec![]);
-                                    app.models.items = models;
-                                }
-                                KeyCode::Enter => {
-                                    app.mode = AppMode::Chat;
-                                }
-                                _ => {}
-                            },
-                        },
                     }
                 }
+                Event::Mouse(mouse_event) => match mouse_event.kind {
+                    MouseEventKind::ScrollUp => app.scroll_up(),
+                    MouseEventKind::ScrollDown => app.scroll_down(),
+                    _ => {}
+                },
+                _ => {}
             }
         }
     }
 
     disable_raw_mode()?;
     stdout().execute(LeaveAlternateScreen)?;
+    stdout().execute(event::DisableMouseCapture)?;
     Ok(())
 }
-
 
 
 
