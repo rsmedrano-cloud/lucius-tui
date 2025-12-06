@@ -6,7 +6,8 @@ A blazing fast, lightweight (sub-20MB RAM) TUI for local LLMs, written in Rust.
 
 - **Lightweight & Fast**: Built with Rust and `ratatui` for minimal resource usage and a responsive feel.
 - **Context Engine (`LUCIUS.md`)**: Automatically finds and uses a `LUCIUS.md` file in your project's directory hierarchy to provide persistent system-level context to the LLM.
-- **Clipboard Integration**: Easily copy the last response to the clipboard using `Ctrl+Y`.
+- **Tool-use Loop**: Enables the LLM to interact with external tools (MCP servers) by generating tool calls, executing them, and incorporating the results into its responses.
+- **Clipboard Integration**: Easily copy the last response from Lucius to the system clipboard using `Ctrl+Y`.
 - **Model Management**: Switch between different local models, see connection status, and refresh the model list from within the UI.
 - **Persistent Configuration**: Remembers your Ollama URL and selected model between sessions.
 - **Modern UI**: A clean interface with rounded borders, padded text, and dynamic information display.
@@ -20,6 +21,7 @@ A blazing fast, lightweight (sub-20MB RAM) TUI for local LLMs, written in Rust.
 | `Ctrl+Q`            | Quit the application.                        |
 | `Ctrl+L`            | Clear the chat history.                      |
 | `Ctrl+Y`            | Yank (copy) the last response to the clipboard. |
+| `Ctrl+T`            | In Chat mode, list available MCP tools in the status bar. |
 | `Esc`               | Exit modal screens (Help/Settings) or interrupt a streaming response. |
 | `Enter`             | Send the message in the input box.           |
 | `Tab`               | In Settings, switch focus between inputs.    |
@@ -29,7 +31,7 @@ A blazing fast, lightweight (sub-20MB RAM) TUI for local LLMs, written in Rust.
 
 ## UI/UX Enhancements
 
-*   **Dynamic Status Line**: A status line is displayed between the conversation and input box. It shows whether a `LUCIUS.md` file is in use and provides feedback for actions like copying to the clipboard.
+*   **Dynamic Status Line**: A status line is displayed between the conversation and input box. It shows whether a `LUCIUS.md` file is in use, provides feedback for actions like copying to the clipboard, and indicates the status of the MCP server.
 *   **Bottom Bar Information**: The bottom of the TUI dynamically displays the current working directory and the active LLM model.
 *   **Improved Rendering**: The conversation and input boxes use rounded borders and internal padding for a cleaner look and to improve the native mouse selection experience.
 
@@ -44,12 +46,22 @@ A blazing fast, lightweight (sub-20MB RAM) TUI for local LLMs, written in Rust.
 
 ## Running the Executable
 
-After building the project in release mode, you can find the executable at `target/release/lucius`.
+After building the project in release mode, you can find the executables at `target/release/lucius` and `target/release/shell-mcp`.
 
-To run the application directly:
+To build both executables:
+```bash
+cargo build --release
+```
+
+To run the main application:
 
 ```bash
 ./target/release/lucius
+```
+
+Alternatively, you can use `cargo run` if you specify the binary:
+```bash
+cargo run --bin lucius
 ```
 
 ### Making it Globally Accessible

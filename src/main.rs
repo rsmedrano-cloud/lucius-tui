@@ -11,15 +11,18 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap, ListState, Padding},
     text::Text,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde_json::Value;
 use simplelog::{LevelFilter, WriteLogger};
 use std::fs::File;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 use tui_textarea::{Input, TextArea};
 use termimad::MadSkin;
 
+mod mcp;
 mod context;
 mod config;
+use mcp::{parse_tool_call, ToolCall};
 
 const HELP_MESSAGE: &str = r#"
 --- Help ---
@@ -28,6 +31,7 @@ Ctrl+S: Toggle Settings
 Ctrl+Q: Quit
 Ctrl+L: Clear Chat
 Ctrl+Y: Yank (Copy) Last Response
+Ctrl+T: List MCP Tools
 Esc: Interrupt current stream (if any)
 Mouse Scroll: Scroll chat history
 Shift + Mouse Drag: Select text for copying
@@ -46,15 +50,6 @@ const ASCII_ART: &str = r#"
 |_____\__,_|\___|_|\__,_|___/  \____|_____|___|
 "#;
 
-#[derive(Serialize)]
-struct ChatRequest {
-    model: String,
-    prompt: String,
-    stream: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<String>,
-}
-
 #[derive(Deserialize, Clone)]
 struct Model {
     name: String,
@@ -65,10 +60,9 @@ struct TagsResponse {
     models: Vec<Model>,
 }
 
-#[derive(Deserialize, Clone)]
-struct ChatResponse {
-    response: Option<String>,
-    done: Option<bool>,
+enum LLMResponse {
+    FinalResponse(String),
+    ToolCallDetected(ToolCall),
 }
 
 enum AppMode {
@@ -131,15 +125,14 @@ struct App<'a> {
     chat_history: Vec<String>,
     url_editor: TextArea<'a>,
     focus: Focus,
-    chat_rx: mpsc::Receiver<String>,
-    chat_tx: mpsc::Sender<String>,
-    interrupt_tx: watch::Sender<bool>,
-    interrupt_rx: watch::Receiver<bool>,
+    response_rx: mpsc::Receiver<String>,
+    response_tx: mpsc::Sender<String>,
     status: bool,
     scroll: u16,
     lucius_context: Option<String>,
     pub config: config::Config,
     status_message: Option<(String, Instant)>,
+    mcp_request_tx: Option<mpsc::Sender<mcp::McpRequest>>,
 }
 
 impl<'a> App<'a> {
@@ -159,14 +152,27 @@ impl<'a> App<'a> {
                 .borders(Borders::ALL)
                 .title("Ollama URL"),
         );
-        let (chat_tx, chat_rx) = mpsc::channel(100);
-        let (interrupt_tx, interrupt_rx) = watch::channel(false);
+        let (response_tx, response_rx) = mpsc::channel(100);
         let lucius_context = context::load_lucius_context(); // Load context
         if let Some(ctx) = &lucius_context {
             log::info!("Loaded LUCIUS.md context: {} bytes", ctx.len());
         } else {
             log::info!("No LUCIUS.md context found.");
         }
+
+        let mcp_server_name = "target/debug/shell-mcp";
+        let mcp_request_tx = match mcp::McpClient::new(mcp_server_name) {
+            Ok(client) => {
+                log::info!("Successfully spawned '{}' server.", mcp_server_name);
+                let (request_tx, request_rx) = mpsc::channel(10);
+                tokio::spawn(mcp::mcp_manager_task(client, request_rx));
+                Some(request_tx)
+            }
+            Err(e) => {
+                log::warn!("Could not spawn '{}' server: {}. MCP functionality will be disabled.", mcp_server_name, e);
+                None
+            }
+        };
 
         App {
             mode: AppMode::Chat,
@@ -175,15 +181,14 @@ impl<'a> App<'a> {
             chat_history: vec![],
             url_editor,
             focus: Focus::Models,
-            chat_rx,
-            chat_tx,
-            interrupt_tx,
-            interrupt_rx,
+            response_rx,
+            response_tx,
             status: false,
             scroll: 0,
             lucius_context,
             config: initial_config, // Store config
             status_message: None,
+            mcp_request_tx,
         }
     }
     
@@ -202,76 +207,169 @@ impl<'a> App<'a> {
         res.is_ok()
     }
     
-    
-    async fn chat_stream(
-        prompt: String,
-        model: String,
-        url: String,
-        tx: mpsc::Sender<String>,
-        mut interrupt_rx: watch::Receiver<bool>,
-        system_message: Option<String>,
-    ) -> Result<(), reqwest::Error> {
-        let client = reqwest::Client::new();
-        let req = ChatRequest {
-            model,
-            prompt,
-            stream: true, // Enable streaming
-            system: system_message,
-        };
-        let mut res = client
-            .post(format!("{}/api/generate", url))
-            .json(&req)
-            .send()
-            .await?;
-    
-        loop {
-            tokio::select! {
-                chunk = res.chunk() => {
-                    if let Ok(Some(chunk)) = chunk {
-                        let text = String::from_utf8_lossy(&chunk);
-                        for line in text.lines() {
-                            if line.trim().is_empty() {
-                                continue;
-                            }
-                            if let Ok(stream_res) = serde_json::from_str::<ChatResponse>(line) {
-                                if let Some(response_part) = stream_res.response {
-                                    if tx.send(response_part).await.is_err() {
-                                        log::error!("Failed to send response part to channel");
-                                        return Ok(());
-                                    }
+async fn handle_llm_turn(
+    mcp_request_tx: Option<mpsc::Sender<mcp::McpRequest>>,
+    current_history: Vec<String>,
+    model: String,
+    url: String,
+    lucius_context: Option<String>,
+    response_tx: mpsc::Sender<String>, // To send final response back to main thread
+) {
+    let mut messages_for_llm = current_history.clone();
+
+    loop {
+        match chat_stream(
+            messages_for_llm.clone(),
+            model.clone(),
+            url.clone(),
+            lucius_context.clone(),
+        )
+        .await
+        {
+            Ok(llm_response) => match llm_response {
+                LLMResponse::FinalResponse(response_text) => {
+                    // Only send final response to main thread for display
+                    if let Err(e) = response_tx.send(response_text).await {
+                        log::error!("Failed to send final LLM response to main thread: {}", e);
+                    }
+                    break; // Exit the loop, final response sent
+                }
+                LLMResponse::ToolCallDetected(tool_call) => {
+                    log::info!("Tool Call Detected: {:?}", tool_call);
+                    // Add tool call to LLM's context for subsequent calls
+                    messages_for_llm.push(format!("Tool Call: {}", serde_json::to_string(&tool_call).unwrap_or_else(|_| "Invalid tool call format".to_string())));
+
+                    if let Some(mcp_tx) = &mcp_request_tx {
+                        let (oneshot_tx, oneshot_rx) = tokio::sync::oneshot::channel();
+                        let mcp_req = mcp::McpRequest {
+                            method: tool_call.tool,
+                            params: tool_call.params,
+                            response_tx: oneshot_tx,
+                        };
+                        
+                        if let Err(e) = mcp_tx.send(mcp_req).await {
+                            log::error!("Failed to send MCP request: {}", e);
+                            let tool_error_str = format!("Tool Error: Failed to send MCP request: {}", e);
+                            messages_for_llm.push(format!("Tool Result: {}", tool_error_str));
+                            continue; // Continue loop to inform LLM
+                        }
+
+                        match oneshot_rx.await {
+                            Ok(tool_result_or_err) => match tool_result_or_err {
+                                Ok(tool_result) => {
+                                    let tool_result_str = format!("{}", tool_result.to_string());
+                                    log::info!("Tool Result: {}", tool_result_str);
+                                    messages_for_llm.push(format!("Tool Result: {}", tool_result_str));
                                 }
-                                if let Some(true) = stream_res.done {
-                                    if tx.send("<END_OF_STREAM>".to_string()).await.is_err() {
-                                        log::error!("Failed to send end of stream message to channel");
-                                    }
-                                    return Ok(()); // End of stream
+                                Err(e) => {
+                                    let tool_error_str = format!("Tool Error: {}", e);
+                                    log::error!("{}", tool_error_str);
+                                    messages_for_llm.push(format!("Tool Result: {}", tool_error_str));
                                 }
-                            } else {
-                                log::error!("Failed to parse stream chunk: {}", line);
-                                if tx.send(format!("Error parsing chunk: {}", line)).await.is_err() {
-                                    log::error!("Failed to send error message to channel");
-                                }
-                                return Ok(());
+                            },
+                            Err(e) => {
+                                let receive_error_str = format!("Tool Error: Failed to receive response from MCP manager: {}", e);
+                                log::error!("{}", receive_error_str);
+                                messages_for_llm.push(format!("Tool Result: {}", receive_error_str));
                             }
                         }
                     } else {
-                        break;
-                    }
-                },
-                _ = interrupt_rx.changed() => {
-                    if *interrupt_rx.borrow() {
-                        log::info!("Interrupt signal received, stopping stream.");
-                        return Ok(());
+                        let no_mcp_msg = "Tool Call detected, but MCP client is not running.";
+                        log::error!("{}", no_mcp_msg);
+                        messages_for_llm.push(format!("Tool Result: {}", no_mcp_msg));
                     }
                 }
+            },
+            Err(e) => {
+                let err_msg = format!("Error from chat stream: {}", e);
+                log::error!("{}", err_msg);
+                if let Err(send_err) = response_tx.send(err_msg).await {
+                    log::error!("Failed to send chat stream error to main thread: {}", send_err);
+                }
+                break; // Exit the loop due to error
             }
         }
-        if tx.send("<END_OF_STREAM>".to_string()).await.is_err() {
-            log::error!("Failed to send end of stream message to channel");
+    }
+}
+    async fn chat_stream(
+    messages: Vec<String>, // New argument for conversation history
+    model: String,
+    url: String,
+    system_message: Option<String>,
+) -> Result<LLMResponse, reqwest::Error> {
+    let client = reqwest::Client::new();
+    
+    // Construct the messages for the Ollama API
+    let mut ollama_messages = Vec::new();
+
+    // Prepend the system message if it exists
+    if let Some(sys_msg) = system_message {
+        ollama_messages.push(serde_json::json!({"role": "system", "content": sys_msg}));
+    }
+
+    // Add previous messages from the conversation history
+    for msg in messages {
+        if msg.starts_with("You: ") {
+            ollama_messages.push(serde_json::json!({"role": "user", "content": msg.strip_prefix("You: ").unwrap()}));
+        } else if msg.starts_with("Lucius: ") {
+            ollama_messages.push(serde_json::json!({"role": "assistant", "content": msg.strip_prefix("Lucius: ").unwrap()}));
+        } else if msg.starts_with("Tool Result: ") {
+            ollama_messages.push(serde_json::json!({"role": "tool", "content": msg.strip_prefix("Tool Result: ").unwrap()}));
+        } else if msg.starts_with("Tool Call: ") {
+            // Tool calls are made by the assistant, so they are part of the assistant's response.
+            // The LLM will use a specific format for tool calls, e.g., "[TOOL_CALL] {...} [END_TOOL_CALL]"
+            // We pass the full message so the LLM knows what it previously said.
+            ollama_messages.push(serde_json::json!({"role": "assistant", "content": msg}));
         }
-        Ok(())
     }
     
+    // Construct the request body with the messages
+    let req_body = serde_json::json!({
+        "model": model,
+        "stream": true,
+        "messages": ollama_messages,
+    });
+    
+    let mut res = client
+        .post(format!("{}/api/chat", url)) // Use /api/chat for multi-turn conversation
+        .json(&req_body)
+        .send()
+        .await?;
+
+    let mut full_response = String::new();
+    while let Ok(Some(chunk)) = res.chunk().await {
+        let text = String::from_utf8_lossy(&chunk);
+        for line in text.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            // Ollama /api/chat endpoint returns a different structure
+            if let Ok(chat_res) = serde_json::from_str::<serde_json::Value>(line) {
+                if let Some(message) = chat_res["message"].as_object() {
+                    if let Some(content) = message["content"].as_str() {
+                        full_response.push_str(content);
+                        // Check for tool call immediately as chunks are received
+                        if let Some(tool_call) = parse_tool_call(&full_response) {
+                            return Ok(LLMResponse::ToolCallDetected(tool_call));
+                        }
+                    }
+                }
+                if chat_res["done"].as_bool().unwrap_or(false) {
+                    // If done: true is received and no tool call was detected mid-stream
+                    return Ok(LLMResponse::FinalResponse(full_response));
+                }
+            } else {
+                log::error!("Failed to parse stream chunk from /api/chat: {}", line);
+            }
+        }
+    }
+    // If stream ends without done: true, check for tool call one last time
+    if let Some(tool_call) = parse_tool_call(&full_response) {
+        Ok(LLMResponse::ToolCallDetected(tool_call))
+    } else {
+        Ok(LLMResponse::FinalResponse(full_response))
+    }
+}
     async fn fetch_models(url: String) -> Result<Vec<Model>, reqwest::Error> {
         let client = reqwest::Client::new();
         let res = client
@@ -325,32 +423,13 @@ impl<'a> App<'a> {
                 }
             }
 
-            if let Ok(msg) = app.chat_rx.try_recv() {
-                if msg == "<END_OF_STREAM>" {
-                    if let Some(last) = app.chat_history.last_mut() {
-                        if last.starts_with("Lucius: ") {
-                            let content = last.split_off(8);
-                            let words: Vec<&str> = content.split_whitespace().collect();
-                            *last = format!("Lucius: {}", words.join(" "));
-                        }
-                    }
-                } else { // Message is not <END_OF_STREAM>
-                    if let Some(last) = app.chat_history.last_mut() {
-                        if last.starts_with("Lucius: ") {
-                            last.push_str(&msg);
-                        } else {
-                            // Last message was not from Lucius, or it was a full message.
-                            // Start a new Lucius response.
-                            app.chat_history.push(format!("Lucius: {}", msg));
-                        }
-                    } else {
-                        // Chat history is empty, start a new Lucius response.
-                        app.chat_history.push(format!("Lucius: {}", msg));
-                    }
-                }
+            // Check for a new, complete response from the LLM
+            if let Ok(response) = app.response_rx.try_recv() {
+                // For now, just push the full response. Tool parsing will be added here.
+                app.chat_history.push(format!("Lucius: {}", response));
                 app.scroll = u16::MAX; // Auto-scroll to bottom
             }
-    
+
             terminal.draw(|frame| {
                 let area = frame.area();
                 match app.mode {
@@ -403,7 +482,7 @@ impl<'a> App<'a> {
                             msg.clone()
                         } else {
                             let lucius_md_count = if app.lucius_context.is_some() { 1 } else { 0 };
-                            let mcp_server_count = 0; // Placeholder for now
+                            let mcp_server_count = if app.mcp_request_tx.is_some() { 1 } else { 0 };
                             format!("using: {} LUCIUS.md | {} MCP server", lucius_md_count, mcp_server_count)
                         };
                         let status_line = Paragraph::new(status_text)
@@ -560,6 +639,42 @@ impl<'a> App<'a> {
                                         app.models.items = fetch_models(url).await.unwrap_or_else(|_| vec![]);
                                         app.models.state.select(Some(0));
                                     }
+                                    KeyCode::Char('t') => {
+                                        if let Some(mcp_tx) = &app.mcp_request_tx {
+                                            let (oneshot_tx, oneshot_rx) = tokio::sync::oneshot::channel();
+                                            let mcp_req = mcp::McpRequest {
+                                                method: "list_tools".to_string(),
+                                                params: Value::Null,
+                                                response_tx: oneshot_tx,
+                                            };
+                                            
+                                            match mcp_tx.send(mcp_req).await {
+                                                Ok(_) => {
+                                                    match oneshot_rx.await {
+                                                        Ok(result_or_err) => match result_or_err {
+                                                            Ok(result) => {
+                                                                app.status_message = Some((format!("MCP Tools: {}", result), Instant::now()));
+                                                            }
+                                                            Err(e) => {
+                                                                app.status_message = Some((format!("MCP Error: {}", e), Instant::now()));
+                                                                log::error!("MCP Client call error: {}", e);
+                                                            }
+                                                        },
+                                                        Err(e) => {
+                                                            app.status_message = Some((format!("MCP Error: Failed to receive response: {}", e), Instant::now()));
+                                                            log::error!("MCP Client response channel error: {}", e);
+                                                        }
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    app.status_message = Some((format!("MCP Error: Failed to send request: {}", e), Instant::now()));
+                                                    log::error!("MCP Client request channel error: {}", e);
+                                                }
+                                            }
+                                        } else {
+                                            app.status_message = Some(("MCP client not running.".to_string(), Instant::now()));
+                                        }
+                                    }
                                     _ => {
                                         // If no global Ctrl shortcut matches, do nothing.
                                         // Mode-specific input will be handled by the outer `else` block if applicable.
@@ -569,9 +684,6 @@ impl<'a> App<'a> {
                                 // Handle non-Ctrl keys based on mode
                                 match app.mode {
                                     AppMode::Chat => match key.code {
-                                        KeyCode::Esc => {
-                                            let _ = app.interrupt_tx.send(true);
-                                        }
                                         KeyCode::Enter => {
                                             let input = app.textarea.lines().join("\n");
                                             if !input.trim().is_empty() {
@@ -581,18 +693,24 @@ impl<'a> App<'a> {
                                                 let url = app.config.ollama_url.clone().unwrap_or_default();
                                                 app.chat_history.push(format!("You: {}", input));
                                                 app.scroll = u16::MAX;
-                                                let tx = app.chat_tx.clone();
-                                                let interrupt_rx = app.interrupt_rx.clone();
-                                                let _ = app.interrupt_tx.send(false);
-                                                let lucius_context = app.lucius_context.clone();
+                                                
+                                                let response_tx_clone = app.response_tx.clone();
+                                                let lucius_context_clone = app.lucius_context.clone();
+                                                let chat_history_clone = app.chat_history.clone();
+                                                let mcp_request_tx_clone = app.mcp_request_tx.clone();
+                                                
                                                 tokio::spawn(async move {
-                                                    if let Err(e) = chat_stream(input, model, url, tx.clone(), interrupt_rx, lucius_context).await {
-                                                        log::error!("Error in chat_stream spawn: {}", e);
-                                                        if tx.send(format!("Error: {}", e)).await.is_err() {
-                                                            log::error!("Failed to send error message to channel");
-                                                        }
-                                                    }
+                                                    handle_llm_turn(
+                                                        mcp_request_tx_clone,
+                                                        chat_history_clone,
+                                                        model,
+                                                        url,
+                                                        lucius_context_clone,
+                                                        response_tx_clone,
+                                                    )
+                                                    .await;
                                                 });
+
                                                 let mut textarea = TextArea::default();
                                                 textarea.set_placeholder_text("Ask me anything...");
                                                 textarea.set_block(
