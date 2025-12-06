@@ -2,21 +2,36 @@
 
 A blazing fast, lightweight (sub-20MB RAM) TUI for local LLMs, written in Rust.
 
-## Context Engine (LUCIUS.md)
+## Features
 
-Lucius can load a `LUCIUS.md` file to provide system-level context to the LLM.
-When the application starts, it traverses parent directories from its current working directory, searching for a file named `LUCIUS.md`. If found, its content is automatically loaded and sent as a system message with each chat request to the LLM. This allows you to "prime" the model with specific instructions, persona, or common information relevant to your project or task.
+- **Lightweight & Fast**: Built with Rust and `ratatui` for minimal resource usage and a responsive feel.
+- **Context Engine (`LUCIUS.md`)**: Automatically finds and uses a `LUCIUS.md` file in your project's directory hierarchy to provide persistent system-level context to the LLM.
+- **Clipboard Integration**: Easily copy the last response to the clipboard using `Ctrl+Y`.
+- **Model Management**: Switch between different local models, see connection status, and refresh the model list from within the UI.
+- **Persistent Configuration**: Remembers your Ollama URL and selected model between sessions.
+- **Modern UI**: A clean interface with rounded borders, padded text, and dynamic information display.
 
-## User Interface Enhancements
+## Keybindings
 
-*   **Unified Help Screen (`Ctrl+H`)**: Replaced the previous long help message with a dedicated, toggleable help screen. Press `Ctrl+H` to view a comprehensive list of all shortcuts and their descriptions.
-*   **Consistent Exit Key (`Esc`)**: The `Esc` key now consistently exits all modal screens (Help, Settings) and returns to the chat interface. Press `Esc` to exit the Help screen or Settings mode. Press `Ctrl+H` again also exits the help screen.
-*   **Dynamic Status Line**: A new status line is displayed between the conversation and input box in chat mode. It currently shows:
-    *   Whether a `LUCIUS.md` context file is being used.
-    *   A placeholder for the number of active MCP servers (future feature).
-*   **Bottom Bar Information**: The very bottom line of the TUI now dynamically displays:
-    *   The current working directory (bottom-left).
-    *   The currently active model (bottom-right).
+| Key                 | Action                                       |
+| ------------------- | -------------------------------------------- |
+| `Ctrl+H`            | Toggle the help screen.                      |
+| `Ctrl+S`            | Switch to the Settings screen.               |
+| `Ctrl+Q`            | Quit the application.                        |
+| `Ctrl+L`            | Clear the chat history.                      |
+| `Ctrl+Y`            | Yank (copy) the last response to the clipboard. |
+| `Esc`               | Exit modal screens (Help/Settings) or interrupt a streaming response. |
+| `Enter`             | Send the message in the input box.           |
+| `Tab`               | In Settings, switch focus between inputs.    |
+| Mouse Scroll        | Scroll the conversation history.             |
+| `Shift` + Mouse Drag | Select text using the terminal's native selection. |
+
+
+## UI/UX Enhancements
+
+*   **Dynamic Status Line**: A status line is displayed between the conversation and input box. It shows whether a `LUCIUS.md` file is in use and provides feedback for actions like copying to the clipboard.
+*   **Bottom Bar Information**: The bottom of the TUI dynamically displays the current working directory and the active LLM model.
+*   **Improved Rendering**: The conversation and input boxes use rounded borders and internal padding for a cleaner look and to improve the native mouse selection experience.
 
 ## Requirements
 
