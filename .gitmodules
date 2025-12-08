@@ -1,0 +1,3 @@
+[submodule "lucius-mcp-worker"]
+	path = lucius-mcp-worker
+	url = https://github.com/rsmedrano-cloud/lucius-mcp-worker
