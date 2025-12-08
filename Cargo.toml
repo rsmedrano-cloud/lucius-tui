@@ -19,6 +19,9 @@ dirs = "5.0"
 lazy_static = "1.5.0"
 regex = "1.12.2"
 
+[dev-dependencies]
+tempfile = "3.6.0"
+
 [[bin]]
 name = "shell-mcp"
 path = "src/bin/shell-mcp.rs"
