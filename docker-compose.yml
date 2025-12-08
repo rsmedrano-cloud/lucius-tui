@@ -1,0 +1,27 @@
+version: '3.9'
+
+services:
+  redis:
+    image: redis:7.2-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data # For persistent queue data
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager # Place Redis on the Swarm Manager
+
+  mcp-worker:
+    # This will be replaced by your local image name later
+    image: lucius-mcp-worker:latest
+    environment:
+      - REDIS_HOST=${REDIS_HOST} # Use the variable from .env
+      - HOST_NAME={{.Node.Hostname}} # Docker Swarm template for host identification
+    depends_on:
+      - redis
+    deploy:
+      mode: global # Deploy one worker on every node (including the manager)
+
+volumes:
+  redis_data:

@@ -4,13 +4,23 @@ A blazing fast, lightweight (sub-20MB RAM) TUI for local LLMs, written in Rust.
 
 ## Features
 
-- **Lightweight & Fast**: Built with Rust and `ratatui` for minimal resource usage and a responsive feel.
-- **Context Engine (`LUCIUS.md`)**: Automatically finds and uses a `LUCIUS.md` file in your project's directory hierarchy to provide persistent system-level context to the LLM.
-- **Tool-use Loop**: Enables the LLM to interact with external tools (MCP servers) by generating tool calls, executing them, and incorporating the results into its responses.
-- **Clipboard Integration**: Easily copy the last response from Lucius to the system clipboard using `Ctrl+Y`.
-- **Model Management**: Switch between different local models, see connection status, and refresh the model list from within the UI.
-- **Persistent Configuration**: Remembers your Ollama URL and selected model between sessions.
-- **Modern UI**: A clean interface with rounded borders, padded text, and dynamic information display.
+
+
+-   **Lightweight & Fast**: Built with Rust and `ratatui` for minimal resource usage and a responsive feel.
+
+-   **Context Engine (`LUCIUS.md`)**: Automatically finds and uses a `LUCIUS.md` file in your project's directory hierarchy to provide persistent system-level context to the LLM.
+
+-   **Distributed Homelab Management (MCP)**: Lucius acts as a central control plane. It enables the LLM to interact with remote worker agents (built using `mcp-worker`) deployed across your homelab.
+
+    -   **Tool-use Loop**: The LLM generates command tasks, which Lucius pushes to a Redis queue. Remote `mcp-worker` agents pick up these tasks, execute them, and report results back to Redis.
+
+-   **Clipboard Integration**: Easily copy the last response from Lucius to the system clipboard using `Ctrl+Y`.
+
+-   **Model Management**: Switch between different local models, see connection status, and refresh the model list from within the UI.
+
+-   **Persistent Configuration**: Remembers your Ollama URL and selected model between sessions.
+
+-   **Modern UI**: A clean interface with rounded borders, padded text, and dynamic information display.
 
 ## Keybindings
 
@@ -44,27 +54,51 @@ A blazing fast, lightweight (sub-20MB RAM) TUI for local LLMs, written in Rust.
     ```
     You can check your Rust version with `rustc --version`.
 
-## Running the Executable
+## Running the Executables
 
-After building the project in release mode, you can find the executables at `target/release/lucius` and `target/release/shell-mcp`.
+Lucius is comprised of two main components:
+1.  The `lucius` TUI application (your primary interface).
+2.  The `mcp-worker` (a background agent that runs on remote machines).
 
-To build both executables:
+### Building Both Executables
+
+To build both `lucius` and `mcp-worker` from this repository:
 ```bash
 cargo build --release
 ```
+You can find the executables at `target/release/lucius` and `target/release/mcp-worker`.
 
-To run the main application:
+### Running the `lucius` TUI Application
 
+To run the main `lucius` application:
 ```bash
 ./target/release/lucius
 ```
-
 Alternatively, you can use `cargo run` if you specify the binary:
 ```bash
 cargo run --bin lucius
 ```
 
-### Making it Globally Accessible
+### Running the `mcp-worker` Agent
+
+The `mcp-worker` is designed to run on a target machine in your homelab. It connects to a central Redis instance to receive tasks.
+
+1.  **Environment Setup**: Ensure `REDIS_HOST` is set in your environment or a `.env` file where the worker is running.
+    ```bash
+    export REDIS_HOST="192.168.1.93" # Replace with your Redis IP/hostname
+    ```
+    Or, create a `.env` file in the worker's directory:
+    ```
+    REDIS_HOST=192.168.1.93
+    ```
+
+2.  **Run in Background**: To run the `mcp-worker` continuously in the background and log its output:
+    ```bash
+    ./target/release/mcp-worker > mcp-worker.log 2>&1 &
+    ```
+    This command redirects `stdout` and `stderr` to `mcp-worker.log` and runs the process in the background.
+
+### Making `lucius` Globally Accessible
 
 To run `lucius` from any directory by simply typing `lucius`, you need to add its location to your system's `PATH`.
 
@@ -73,7 +107,6 @@ To run `lucius` from any directory by simply typing `lucius`, you need to add it
 ```bash
 sudo cp target/release/lucius /usr/local/bin/
 ```
-
 After this, you can just type `lucius` in your terminal.
 
 **Option 2: Add to your shell's PATH (Temporary or Permanent)**
@@ -92,4 +125,4 @@ After this, you can just type `lucius` in your terminal.
     source ~/.bashrc
     ```
 
-**Note:** If you are running `lucius` from inside the `lucius` project directory, you can also use `cargo run --release`.
+**Architectural Note:** Currently, `mcp-worker` is part of this `lucius` repository. However, the recommended long-term solution is to extract `mcp-worker` into its own separate repository (e.g., `lucius-mcp-worker`). This would streamline its deployment on remote nodes and allow for independent development and versioning. The documentation for this `lucius` TUI application will eventually link to that separate repository for worker setup.

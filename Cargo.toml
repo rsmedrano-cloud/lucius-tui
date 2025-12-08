@@ -18,10 +18,19 @@ simplelog = "0.12"
 dirs = "5.0"
 lazy_static = "1.5.0"
 regex = "1.12.2"
+bollard = "0.16.1"
+dotenv = "0.15.0"
+chrono = { version = "0.4", features = ["serde"] }
+redis = { version = "0.25.0", features = ["tokio-comp"] }
+uuid = { version = "1.8.0", features = ["v4", "serde"] }
 
 [[bin]]
 name = "shell-mcp"
 path = "src/bin/shell-mcp.rs"
+
+[[bin]]
+name = "mcp-worker"
+path = "src/bin/mcp-worker/main.rs"
 
 
 

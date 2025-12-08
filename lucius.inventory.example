@@ -1,0 +1,26 @@
+# lucius.inventory.example
+
+[[host]]
+name = "main_workstation"
+ip = "100.100.0.1" # Example Tailscale IP (where Lucius TUI runs)
+roles = ["controller"]
+
+[[host]]
+name = "homelab_server"
+ip = "100.100.0.2"
+roles = ["swarm_manager", "worker"]
+
+[[host]]
+name = "ai_server"
+ip = "100.100.0.3"
+roles = ["worker", "ollama"] # Ollama should only run here
+
+[[host]]
+name = "network_stick"
+ip = "100.100.0.4"
+roles = ["worker", "network"] # PiHole/DNS should only run here
+
+[[host]]
+name = "rpi4_ha"
+ip = "100.100.0.5"
+roles = ["worker", "homeassistant"] # HA should only run here

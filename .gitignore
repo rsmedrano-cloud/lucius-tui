@@ -2,3 +2,5 @@
 .DS_Store
 *.log
 Cargo.lock
+lucius.inventory
+.env

@@ -15,14 +15,27 @@ use serde::Deserialize;
 use serde_json::Value;
 use simplelog::{LevelFilter, WriteLogger};
 use std::fs::File;
+
+// Redis related imports
+use redis::aio::MultiplexedConnection;
+use redis::AsyncCommands;
+
+// Tokio related imports
 use tokio::sync::mpsc;
+
+// UI related imports
 use tui_textarea::{Input, TextArea};
 use termimad::MadSkin;
+
+// UUID import
+use uuid::Uuid;
 
 mod mcp;
 mod context;
 mod config;
-use mcp::{parse_tool_call, ToolCall};
+
+// Specific mcp imports
+use mcp::{parse_tool_call, ToolCall, Task, TaskType};
 
 const HELP_MESSAGE: &str = r#"
 --- Help ---
@@ -31,7 +44,7 @@ Ctrl+S: Toggle Settings
 Ctrl+Q: Quit
 Ctrl+L: Clear Chat
 Ctrl+Y: Yank (Copy) Last Response
-Ctrl+T: List MCP Tools
+Ctrl+T: MCP Status
 Esc: Interrupt current stream (if any)
 Mouse Scroll: Scroll chat history
 Shift + Mouse Drag: Select text for copying
@@ -132,11 +145,11 @@ struct App<'a> {
     lucius_context: Option<String>,
     pub config: config::Config,
     status_message: Option<(String, Instant)>,
-    mcp_request_tx: Option<mpsc::Sender<mcp::McpRequest>>,
+    redis_conn: Option<MultiplexedConnection>,
 }
 
 impl<'a> App<'a> {
-    fn new(models: Vec<Model>, initial_config: config::Config) -> App<'a> { // Added initial_config
+    async fn new(models: Vec<Model>, initial_config: config::Config) -> App<'a> {
         let mut textarea = TextArea::default();
         textarea.set_placeholder_text("Ask me anything...");
         textarea.set_block(
@@ -145,7 +158,7 @@ impl<'a> App<'a> {
                 .title("Input")
                 .border_type(ratatui::widgets::BorderType::Rounded),
         );
-        let url_editor_content = initial_config.ollama_url.clone().unwrap_or_else(|| "http://192.168.1.42:11434".to_string()); // Init from config
+        let url_editor_content = initial_config.ollama_url.clone().unwrap_or_else(|| "http://192.168.1.42:11434".to_string());
         let mut url_editor = TextArea::new(vec![url_editor_content]);
         url_editor.set_block(
             Block::default()
@@ -153,23 +166,29 @@ impl<'a> App<'a> {
                 .title("Ollama URL"),
         );
         let (response_tx, response_rx) = mpsc::channel(100);
-        let lucius_context = context::load_lucius_context(); // Load context
+        let lucius_context = context::load_lucius_context();
         if let Some(ctx) = &lucius_context {
             log::info!("Loaded LUCIUS.md context: {} bytes", ctx.len());
         } else {
             log::info!("No LUCIUS.md context found.");
         }
 
-        let mcp_server_name = "target/debug/shell-mcp";
-        let mcp_request_tx = match mcp::McpClient::new(mcp_server_name) {
-            Ok(client) => {
-                log::info!("Successfully spawned '{}' server.", mcp_server_name);
-                let (request_tx, request_rx) = mpsc::channel(10);
-                tokio::spawn(mcp::mcp_manager_task(client, request_rx));
-                Some(request_tx)
-            }
+        // Initialize Redis connection for MCP
+        let redis_host = std::env::var("REDIS_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+        let redis_url = format!("redis://{}/", redis_host);
+        let redis_conn = match redis::Client::open(redis_url) {
+            Ok(client) => match client.get_multiplexed_async_connection().await {
+                Ok(conn) => {
+                    log::info!("Successfully connected to Redis for MCP.");
+                    Some(conn)
+                },
+                Err(e) => {
+                    log::warn!("Failed to get multiplexed Redis connection: {}. MCP functionality will be disabled.", e);
+                    None
+                }
+            },
             Err(e) => {
-                log::warn!("Could not spawn '{}' server: {}. MCP functionality will be disabled.", mcp_server_name, e);
+                log::warn!("Failed to create Redis client: {}. MCP functionality will be disabled.", e);
                 None
             }
         };
@@ -186,9 +205,9 @@ impl<'a> App<'a> {
             status: false,
             scroll: 0,
             lucius_context,
-            config: initial_config, // Store config
+            config: initial_config,
             status_message: None,
-            mcp_request_tx,
+            redis_conn,
         }
     }
     
@@ -208,12 +227,12 @@ impl<'a> App<'a> {
     }
     
 async fn handle_llm_turn(
-    mcp_request_tx: Option<mpsc::Sender<mcp::McpRequest>>,
+    mut redis_conn: Option<MultiplexedConnection>,
     current_history: Vec<String>,
     model: String,
     url: String,
     lucius_context: Option<String>,
-    response_tx: mpsc::Sender<String>, // To send final response back to main thread
+    response_tx: mpsc::Sender<String>,
 ) {
     let mut messages_for_llm = current_history.clone();
 
@@ -228,53 +247,76 @@ async fn handle_llm_turn(
         {
             Ok(llm_response) => match llm_response {
                 LLMResponse::FinalResponse(response_text) => {
-                    // Only send final response to main thread for display
                     if let Err(e) = response_tx.send(response_text).await {
                         log::error!("Failed to send final LLM response to main thread: {}", e);
                     }
-                    break; // Exit the loop, final response sent
+                    break; 
                 }
                 LLMResponse::ToolCallDetected(tool_call) => {
                     log::info!("Tool Call Detected: {:?}", tool_call);
-                    // Add tool call to LLM's context for subsequent calls
-                    messages_for_llm.push(format!("Tool Call: {}", serde_json::to_string(&tool_call).unwrap_or_else(|_| "Invalid tool call format".to_string())));
+                    messages_for_llm.push(format!("Tool Call: {}", serde_json::to_string(&tool_call).unwrap_or_default()));
 
-                    if let Some(mcp_tx) = &mcp_request_tx {
-                        let (oneshot_tx, oneshot_rx) = tokio::sync::oneshot::channel();
-                        let mcp_req = mcp::McpRequest {
-                            method: tool_call.tool,
-                            params: tool_call.params,
-                            response_tx: oneshot_tx,
+                    if let Some(conn) = &mut redis_conn {
+                        let task_id = Uuid::new_v4().to_string();
+                        let task_type = match tool_call.tool.as_str() {
+                            "exec" | "shell" => TaskType::SHELL,
+                            "docker" => TaskType::DOCKER,
+                            _ => TaskType::SHELL, // Default to SHELL for unknown tools
                         };
-                        
-                        if let Err(e) = mcp_tx.send(mcp_req).await {
-                            log::error!("Failed to send MCP request: {}", e);
-                            let tool_error_str = format!("Tool Error: Failed to send MCP request: {}", e);
-                            messages_for_llm.push(format!("Tool Result: {}", tool_error_str));
-                            continue; // Continue loop to inform LLM
-                        }
 
-                        match oneshot_rx.await {
-                            Ok(tool_result_or_err) => match tool_result_or_err {
-                                Ok(tool_result) => {
-                                    let tool_result_str = format!("{}", tool_result.to_string());
-                                    log::info!("Tool Result: {}", tool_result_str);
-                                    messages_for_llm.push(format!("Tool Result: {}", tool_result_str));
-                                }
-                                Err(e) => {
-                                    let tool_error_str = format!("Tool Error: {}", e);
-                                    log::error!("{}", tool_error_str);
-                                    messages_for_llm.push(format!("Tool Result: {}", tool_error_str));
-                                }
-                            },
+                        let task = Task {
+                            id: task_id.clone(),
+                            target_host: "any".to_string(), // Target logic can be enhanced later
+                            task_type,
+                            details: tool_call.params,
+                        };
+
+                        let task_json = match serde_json::to_string(&task) {
+                            Ok(json) => json,
                             Err(e) => {
-                                let receive_error_str = format!("Tool Error: Failed to receive response from MCP manager: {}", e);
-                                log::error!("{}", receive_error_str);
-                                messages_for_llm.push(format!("Tool Result: {}", receive_error_str));
+                                let err_msg = format!("Tool Error: Failed to serialize task: {}", e);
+                                log::error!("{}", err_msg);
+                                messages_for_llm.push(format!("Tool Result: {}", err_msg));
+                                continue;
+                            }
+                        };
+
+                        let queue_key = "mcp::tasks::all";
+                        let result_key = format!("mcp::result::{}", task_id);
+
+                        // Push task to queue
+                        let rpush_result: redis::RedisResult<()> = conn.rpush(queue_key, &task_json).await;
+                        if let Err(e) = rpush_result {
+                            let err_msg = format!("Tool Error: Failed to push task to Redis: {}", e);
+                            log::error!("{}", err_msg);
+                            messages_for_llm.push(format!("Tool Result: {}", err_msg));
+                            continue;
+                        }
+                        log::info!("Pushed task {} to Redis queue '{}'", task_id, queue_key);
+
+                        // Wait for result
+                        log::info!("Waiting for result on key '{}'", result_key);
+                        let blpop_result: redis::RedisResult<Vec<String>> = conn.blpop(&result_key, 30.0).await; // 30 second timeout
+
+                        match blpop_result {
+                            Ok(result_vec) => {
+                                if let Some(result_str) = result_vec.get(1) {
+                                    log::info!("Tool Result: {}", result_str);
+                                    messages_for_llm.push(format!("Tool Result: {}", result_str));
+                                } else {
+                                    let err_msg = "Tool Error: Received empty result from Redis.";
+                                    log::error!("{}", err_msg);
+                                    messages_for_llm.push(format!("Tool Result: {}", err_msg));
+                                }
+                            }
+                            Err(e) => {
+                                let err_msg = format!("Tool Error: Failed to get result from Redis: {}", e);
+                                log::error!("{}", err_msg);
+                                messages_for_llm.push(format!("Tool Result: {}", err_msg));
                             }
                         }
                     } else {
-                        let no_mcp_msg = "Tool Call detected, but MCP client is not running.";
+                        let no_mcp_msg = "Tool Call detected, but MCP Redis client is not connected.";
                         log::error!("{}", no_mcp_msg);
                         messages_for_llm.push(format!("Tool Result: {}", no_mcp_msg));
                     }
@@ -286,7 +328,7 @@ async fn handle_llm_turn(
                 if let Err(send_err) = response_tx.send(err_msg).await {
                     log::error!("Failed to send chat stream error to main thread: {}", send_err);
                 }
-                break; // Exit the loop due to error
+                break;
             }
         }
     }
@@ -394,7 +436,7 @@ async fn handle_llm_turn(
         let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
     
         let models = fetch_models(initial_ollama_url.clone()).await.unwrap_or_else(|_| vec![]);
-        let mut app = App::new(models, config.clone()); // Pass config to App::new()
+        let mut app = App::new(models, config.clone()).await; // App::new is now async
     
         // Select initial model if present in config
         if let Some(selected_model_name) = &config.selected_model { // Use config here directly
@@ -482,7 +524,7 @@ async fn handle_llm_turn(
                             msg.clone()
                         } else {
                             let lucius_md_count = if app.lucius_context.is_some() { 1 } else { 0 };
-                            let mcp_server_count = if app.mcp_request_tx.is_some() { 1 } else { 0 };
+                            let mcp_server_count = if app.redis_conn.is_some() { 1 } else { 0 };
                             format!("using: {} LUCIUS.md | {} MCP server", lucius_md_count, mcp_server_count)
                         };
                         let status_line = Paragraph::new(status_text)
@@ -640,39 +682,10 @@ async fn handle_llm_turn(
                                         app.models.state.select(Some(0));
                                     }
                                     KeyCode::Char('t') => {
-                                        if let Some(mcp_tx) = &app.mcp_request_tx {
-                                            let (oneshot_tx, oneshot_rx) = tokio::sync::oneshot::channel();
-                                            let mcp_req = mcp::McpRequest {
-                                                method: "list_tools".to_string(),
-                                                params: Value::Null,
-                                                response_tx: oneshot_tx,
-                                            };
-                                            
-                                            match mcp_tx.send(mcp_req).await {
-                                                Ok(_) => {
-                                                    match oneshot_rx.await {
-                                                        Ok(result_or_err) => match result_or_err {
-                                                            Ok(result) => {
-                                                                app.status_message = Some((format!("MCP Tools: {}", result), Instant::now()));
-                                                            }
-                                                            Err(e) => {
-                                                                app.status_message = Some((format!("MCP Error: {}", e), Instant::now()));
-                                                                log::error!("MCP Client call error: {}", e);
-                                                            }
-                                                        },
-                                                        Err(e) => {
-                                                            app.status_message = Some((format!("MCP Error: Failed to receive response: {}", e), Instant::now()));
-                                                            log::error!("MCP Client response channel error: {}", e);
-                                                        }
-                                                    }
-                                                }
-                                                Err(e) => {
-                                                    app.status_message = Some((format!("MCP Error: Failed to send request: {}", e), Instant::now()));
-                                                    log::error!("MCP Client request channel error: {}", e);
-                                                }
-                                            }
+                                        if app.redis_conn.is_some() {
+                                            app.status_message = Some(("MCP is connected via Redis.".to_string(), Instant::now()));
                                         } else {
-                                            app.status_message = Some(("MCP client not running.".to_string(), Instant::now()));
+                                            app.status_message = Some(("MCP Redis client not connected.".to_string(), Instant::now()));
                                         }
                                     }
                                     _ => {
@@ -697,11 +710,11 @@ async fn handle_llm_turn(
                                                 let response_tx_clone = app.response_tx.clone();
                                                 let lucius_context_clone = app.lucius_context.clone();
                                                 let chat_history_clone = app.chat_history.clone();
-                                                let mcp_request_tx_clone = app.mcp_request_tx.clone();
+                                                let redis_conn_clone = app.redis_conn.clone();
                                                 
                                                 tokio::spawn(async move {
                                                     handle_llm_turn(
-                                                        mcp_request_tx_clone,
+                                                        redis_conn_clone,
                                                         chat_history_clone,
                                                         model,
                                                         url,

@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2025-12-08
+
+### Fixed
+
+- **`mcp-worker` Instability**: Resolved critical issues causing the `mcp-worker` to crash due to unhandled Redis connection failures, `LPOP` errors, and invalid JSON task payloads.
+    - Implemented comprehensive "panic-proof" error handling using `match` statements for all Redis operations and JSON deserialization.
+    - Ensured continuous operation of the worker, gracefully logging errors and continuing to process the task queue.
+
+### Changed
+
+- **`mcp-worker` Architecture Clarified**: Replaced the previous understanding of `mcp-worker` with a fully asynchronous, Redis-queue-based, and robust task processing agent. The `shell-mcp` is now understood as part of an older, deprecated architecture.
+- **Improved Logging**: Integrated a robust logging mechanism within `mcp-worker` to provide clear operational feedback and error diagnostics.
+
+### Added
+
+- **Architectural Recommendation**: Documented the recommendation to transition `mcp-worker` into a separate repository (`lucius-mcp-worker`) to better reflect its role as an independent server agent and streamline deployment.
+
 ## [0.3.0] - 2025-12-06
 
 ### Added
