@@ -1,4 +1,3 @@
-
 pub fn get_text_coordinates(
     layout_area: ratatui::layout::Rect,
     mouse_x: u16,

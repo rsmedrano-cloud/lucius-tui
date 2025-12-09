@@ -15,7 +15,7 @@ use std::fs::File;
 mod app;
 mod context;
 mod config;
-mod mcp; // mcp.rs will contain data structures and maybe task submission helper
+mod mcp;
 mod ui;
 mod handlers;
 mod renderer;
@@ -27,11 +27,6 @@ mod clipboard;
 use app::App;
 use ui::AppMode;
 use llm::{ping_ollama, fetch_models};
-
-
-// ASCII Art and HELP_MESSAGE should ideally be moved to ui.rs or a separate consts.rs
-// For now, keeping them here as they are part of the initial "bare minimum" main.rs until ui.rs is created
-
 
 
 #[tokio::main]

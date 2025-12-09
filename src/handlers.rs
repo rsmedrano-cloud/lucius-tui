@@ -1,19 +1,17 @@
-use std::io::Write;
-use std::process::{Command, Stdio};
 use std::time::Instant;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
-use ratatui::widgets::{Block, Borders};
-use tokio::sync::mpsc; // Added oneshot
+use tokio::sync::mpsc;
 use tui_textarea::{Input, TextArea};
 use crate::app::{App};
 use crate::ui::{AppMode, Focus, ConfirmationModal};
 use crate::llm::{LLMResponse, ping_ollama, chat_stream, fetch_models};
 use crate::clipboard;
 use crate::mouse;
-use crate::mcp::{self}; // Added submit_task and poll_result
+use crate::mcp::{self};
 
 
 pub async fn handle_event(app: &mut App<'_>, event: Event, should_quit: &mut bool) {
+    log::info!("Handling event: {:?}", event);
     // Check if app.mode is Confirmation, handle its events then skip other processing
     if let AppMode::Confirmation(ConfirmationModal::ExecuteTool { tool_call: _, confirm_tx }) = &mut app.mode {
         if let Event::Key(key) = event {
@@ -41,6 +39,7 @@ pub async fn handle_event(app: &mut App<'_>, event: Event, should_quit: &mut boo
     if event::poll(std::time::Duration::from_millis(50)).expect("Event polling failed") {
         match event {
             Event::Key(key) => {
+                log::info!("Key event: {:?}", key);
                 if key.kind == crossterm::event::KeyEventKind::Press {
                     // Handle global shortcuts first
                     if key.modifiers == KeyModifiers::CONTROL {
@@ -88,7 +87,6 @@ pub async fn handle_event(app: &mut App<'_>, event: Event, should_quit: &mut boo
                             }
                             _ => {
                                 // If no global Ctrl shortcut matches, do nothing.
-                                // Mode-specific input will be handled by the outer `else` block if applicable.
                             }
                         }
                     } else {
@@ -124,11 +122,6 @@ pub async fn handle_event(app: &mut App<'_>, event: Event, should_quit: &mut boo
 
                                         let mut textarea = TextArea::default();
                                         textarea.set_placeholder_text("Ask me anything...");
-                                        textarea.set_block(
-                                            Block::default()
-                                                .borders(Borders::ALL)
-                                                .title("Input"),
-                                        );
                                         app.textarea = textarea;
                                     }
                                 }
@@ -172,7 +165,7 @@ pub async fn handle_event(app: &mut App<'_>, event: Event, should_quit: &mut boo
                                         }
                                         app.mode = AppMode::Chat;
                                     }
-                                    _ => {}
+                                    _ => {} 
                                 },
                             },
                             AppMode::Help => {
@@ -180,7 +173,7 @@ pub async fn handle_event(app: &mut App<'_>, event: Event, should_quit: &mut boo
                                     app.mode = AppMode::Chat;
                                 }
                             }
-                            AppMode::Confirmation(_) => {}
+                            AppMode::Confirmation(_) => {} 
                         }
                     }
                 }
@@ -226,10 +219,10 @@ pub async fn handle_event(app: &mut App<'_>, event: Event, should_quit: &mut boo
                         }
                         app.selection_range = None;
                     }
-                    _ => {}
+                    _ => {} 
                 }
             },
-            _ => {}
+            _ => {} 
         }
     }
 }
