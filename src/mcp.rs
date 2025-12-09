@@ -9,7 +9,7 @@ use uuid::Uuid;
 // --- Task & Tool Data Structures ---
 
 /// Represents a tool call identified from the LLM's output.
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct ToolCall {
     pub tool: String,
     pub params: Value,

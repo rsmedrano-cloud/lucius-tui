@@ -1,7 +1,6 @@
 use std::io::{self, stdout};
-use std::time::Instant;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyModifiers},
+    event::{self},
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
@@ -21,7 +20,7 @@ mod ui;
 mod events;
 
 // Import items directly from app module
-use app::{App, AppMode, Model, ping_ollama};
+use app::{App, AppMode, ping_ollama};
 
 
 // ASCII Art and HELP_MESSAGE should ideally be moved to ui.rs or a separate consts.rs

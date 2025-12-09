@@ -1,27 +1,30 @@
-use std::io::{self, Write};
+use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Instant;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
-use serde_json::Value;
-use tokio::sync::mpsc;
+use ratatui::widgets::{Block, Borders};
+use tokio::sync::mpsc; // Added oneshot
 use tui_textarea::{Input, TextArea};
-use crate::app::{App, AppMode, Focus, LLMResponse, Model, ping_ollama, chat_stream, ConfirmationModal};
-use crate::mcp::{ToolCall, Task, TaskType};
-use crate::config;
+use crate::app::{self, App, AppMode, Focus, LLMResponse, ping_ollama, chat_stream, ConfirmationModal};
+use crate::mcp::{self}; // Added submit_task and poll_result
 
 
 pub async fn handle_event(app: &mut App<'_>, event: Event, should_quit: &mut bool) {
     // Check if app.mode is Confirmation, handle its events then skip other processing
-    if let AppMode::Confirmation(ConfirmationModal::ExecuteTool { tool_call, confirm_tx }) = &mut app.mode {
+    if let AppMode::Confirmation(ConfirmationModal::ExecuteTool { tool_call: _, confirm_tx }) = &mut app.mode {
         if let Event::Key(key) = event {
             if key.kind == crossterm::event::KeyEventKind::Press {
                 match key.code {
                     KeyCode::Char('y') | KeyCode::Char('Y') => {
-                        let _ = confirm_tx.send(true);
+                        if let Some(tx) = confirm_tx.take() {
+                            let _ = tx.send(true);
+                        }
                         app.mode = AppMode::Chat; // Exit modal
                     }
                     KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                        let _ = confirm_tx.send(false);
+                        if let Some(tx) = confirm_tx.take() {
+                            let _ = tx.send(false);
+                        }
                         app.mode = AppMode::Chat; // Exit modal
                     }
                     _ => {}
@@ -193,6 +196,7 @@ pub async fn handle_event(app: &mut App<'_>, event: Event, should_quit: &mut boo
                                     app.mode = AppMode::Chat;
                                 }
                             }
+                            AppMode::Confirmation(_) => {}
                         }
                     }
                 }

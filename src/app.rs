@@ -1,17 +1,13 @@
 use std::time::Instant;
-use ratatui::{
-    widgets::{ListState, Block, Borders, Padding},
-    style::{Color, Style, Modifier},
-};
+use ratatui::widgets::{ListState, Block, Borders};
 use tokio::sync::mpsc;
 use tui_textarea::TextArea;
 use serde::Deserialize;
 use redis::aio::MultiplexedConnection;
-use uuid::Uuid;
 
 use crate::config;
 use crate::context;
-use crate::mcp::{self, parse_tool_call, ToolCall, Task, TaskType}; // Updated path for mcp items
+use crate::mcp::{parse_tool_call, ToolCall}; // Updated path for mcp items
 
 #[derive(Deserialize, Clone)]
 pub struct Model {
@@ -29,27 +25,58 @@ pub enum LLMResponse {
     ToolCallDetected(ToolCall),
 }
 
-#[derive(PartialEq)] // Added for comparison in ConfirmationModal
+#[derive(Clone)]
 pub enum AppMode {
     Chat,
     Settings,
     Help,
-    Confirmation(ConfirmationModal), // New mode for confirmation dialog
+    Confirmation(ConfirmationModal),
 }
 
-#[derive(PartialEq)]
+impl PartialEq for AppMode {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (AppMode::Chat, AppMode::Chat) => true,
+            (AppMode::Settings, AppMode::Settings) => true,
+            (AppMode::Help, AppMode::Help) => true,
+            (AppMode::Confirmation(a), AppMode::Confirmation(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+#[derive(PartialEq, Clone, Copy)]
 pub enum Focus {
     Url,
     Models,
 }
 
-#[derive(PartialEq)]
 pub enum ConfirmationModal {
     ExecuteTool {
         tool_call: ToolCall,
-        // The sender to send the confirmation back to the event loop
-        confirm_tx: tokio::sync::oneshot::Sender<bool>, 
+        confirm_tx: Option<tokio::sync::oneshot::Sender<bool>>,
     },
+}
+
+impl Clone for ConfirmationModal {
+    fn clone(&self) -> Self {
+        match self {
+            ConfirmationModal::ExecuteTool { tool_call, .. } => {
+                ConfirmationModal::ExecuteTool {
+                    tool_call: tool_call.clone(),
+                    confirm_tx: None, // Can't clone the sender
+                }
+            }
+        }
+    }
+}
+
+impl PartialEq for ConfirmationModal {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (ConfirmationModal::ExecuteTool { tool_call: a, .. }, ConfirmationModal::ExecuteTool { tool_call: b, .. }) => a == b,
+        }
+    }
 }
 
 pub struct StatefulList<T> {
@@ -188,6 +215,14 @@ pub async fn ping_ollama(url: String) -> bool {
     let res = client.get(url).send().await;
     res.is_ok()
 }
+
+pub async fn fetch_models(url: String) -> Result<Vec<Model>, reqwest::Error> {
+    let client = reqwest::Client::new();
+    let res = client.get(format!("{}/api/tags", url)).send().await?;
+    let tags_response: TagsResponse = res.json().await?;
+    Ok(tags_response.models)
+}
+
 
 pub async fn chat_stream(
     messages: Vec<String>,

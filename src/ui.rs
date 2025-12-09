@@ -1,8 +1,7 @@
 use ratatui::{
-    backend::Backend,
     prelude::{Frame, Layout, Direction, Constraint, Style},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap, ListState, Padding},
-    text::Text,
+    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap, Padding},
+    text::{Line, Text},
     layout::Alignment,
     style::{Color, Modifier},
 };
@@ -36,8 +35,8 @@ const ASCII_ART: &str = r#"
 |_____\__,_|\___|_|\__,_|___/  \____|_____|___|
 "#;
 
-pub fn draw_ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
-    let area = f.size();
+pub fn draw_ui(f: &mut Frame, app: &mut App) {
+    let area = f.area();
     
     match app.mode {
         AppMode::Chat => {
@@ -65,7 +64,7 @@ pub fn draw_ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
                 .title("Conversation")
                 .borders(Borders::ALL)
                 .border_type(ratatui::widgets::BorderType::Rounded)
-                .padding(Padding::new(1, 1, 1, 1)); // Left, Right, Top, Bottom
+                .padding(Padding::new(1, 1, 1, 1));
 
             let chat_area_height = chunks[1].height.saturating_sub(2) as usize;
             let num_lines_in_history = markdown_text.lines().count();
@@ -102,7 +101,6 @@ pub fn draw_ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
 
             f.render_widget(&app.textarea, chunks[3]);
             
-            // Display current directory and active model
             let bottom_chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
@@ -134,7 +132,6 @@ pub fn draw_ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
                 ])
                 .split(area);
 
-            // URL Editor
             let url_editor_block = Block::default()
                 .borders(Borders::ALL)
                 .title("Ollama URL");
@@ -155,7 +152,6 @@ pub fn draw_ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
                 .block(Block::default().title("Status").borders(Borders::ALL));
             f.render_widget(status, chunks[1]);
             
-            // Models List
             let models_block = Block::default()
                 .title("Models")
                 .borders(Borders::ALL);
@@ -180,14 +176,37 @@ pub fn draw_ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
                 .block(help_block);
             f.render_widget(help_paragraph, area);
         }
-        AppMode::Confirmation(ConfirmationModal::ExecuteTool { tool_call, .. }) => {
-            // Render the main UI first (e.g., chat mode) as a background
-            let current_mode = app.mode;
-            app.mode = AppMode::Chat; // Temporarily change mode for background rendering
-            draw_ui(f, app); // Render background
-            app.mode = current_mode; // Restore original mode
+        AppMode::Confirmation(ConfirmationModal::ExecuteTool { ref tool_call, .. }) => {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(7),
+                    Constraint::Min(0),
+                    Constraint::Length(1),
+                    Constraint::Length(3),
+                    Constraint::Length(1),
+                ])
+                .split(area);
 
-            // Then render the modal overlay
+            let ascii_art = Paragraph::new(ASCII_ART).alignment(Alignment::Center);
+            f.render_widget(ascii_art, chunks[0]);
+            
+            let history_text: String = app.chat_history.join("\n");
+            let markdown_text = MadSkin::default().term_text(&history_text).to_string();
+
+            let conversation_block = Block::default()
+                .title("Conversation")
+                .borders(Borders::ALL)
+                .border_type(ratatui::widgets::BorderType::Rounded)
+                .padding(Padding::new(1, 1, 1, 1));
+            let history = Paragraph::new(Text::raw(markdown_text))
+                .wrap(Wrap { trim: true })
+                .scroll((app.scroll, 0))
+                .block(conversation_block);
+            f.render_widget(history, chunks[1]);
+
+            f.render_widget(&app.textarea, chunks[3]);
+
             let modal_width = 60;
             let modal_height = 8;
             let popup_layout = Layout::default()
@@ -208,13 +227,13 @@ pub fn draw_ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
                 ])
                 .split(popup_layout[1])[1];
 
-            let text = vec![
-                Text::raw(format!("Execute Command?")),
-                Text::raw(""),
-                Text::raw(format!("Tool: {}", tool_call.tool)),
-                Text::raw(format!("Params: {}", tool_call.params)),
-                Text::raw(""),
-                Text::raw("Press 'y' to confirm, 'n' to cancel."),
+            let text: Vec<Line> = vec![
+                Line::from("Execute Command?"),
+                Line::from(""),
+                Line::from(format!("Tool: {}", tool_call.tool.clone())),
+                Line::from(format!("Params: {}", tool_call.params.clone())),
+                Line::from(""),
+                Line::from("Press 'y' to confirm, 'n' to cancel."),
             ];
             let block = Block::default()
                 .title("CONFIRM ACTION")
