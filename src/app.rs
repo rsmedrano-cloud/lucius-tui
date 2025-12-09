@@ -189,7 +189,7 @@ impl<'a> App<'a> {
             textarea,
             chat_history: vec![],
             url_editor,
-            focus: Focus::Models,
+            focus: Focus::Url,
             response_rx,
             response_tx,
             status: false,
