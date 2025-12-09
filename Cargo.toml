@@ -23,6 +23,8 @@ dotenv = "0.15.0"
 chrono = { version = "0.4", features = ["serde"] }
 redis = { version = "0.25.0", features = ["tokio-comp"] }
 uuid = { version = "1.8.0", features = ["v4", "serde"] }
+arboard = "3.4.0"
+
 
 
 

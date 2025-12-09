@@ -17,10 +17,16 @@ mod context;
 mod config;
 mod mcp; // mcp.rs will contain data structures and maybe task submission helper
 mod ui;
-mod events;
+mod handlers;
+mod renderer;
+mod llm;
+mod mouse;
+mod clipboard;
 
 // Import items directly from app module
-use app::{App, AppMode, ping_ollama};
+use app::App;
+use ui::AppMode;
+use llm::{ping_ollama, fetch_models};
 
 
 // ASCII Art and HELP_MESSAGE should ideally be moved to ui.rs or a separate consts.rs
@@ -43,7 +49,7 @@ async fn main() -> io::Result<()> {
     // 3. Load Config and Initial Models
     let config = config::Config::load();
     let initial_ollama_url = config.ollama_url.clone().unwrap_or_else(|| "http://192.168.1.42:11434".to_string());
-    let models = app::fetch_models(initial_ollama_url.clone()).await.unwrap_or_else(|e| {
+    let models = fetch_models(initial_ollama_url.clone()).await.unwrap_or_else(|e| {
         log::error!("Failed to fetch initial models: {}", e);
         vec![]
     });
@@ -79,13 +85,13 @@ async fn main() -> io::Result<()> {
 
         // Draw UI
         terminal.draw(|frame| {
-            ui::draw_ui(frame, &mut app);
+            renderer::draw_ui(frame, &mut app);
         })?;
 
         // Handle events
         if let Ok(true) = event::poll(std::time::Duration::from_millis(50)) {
             if let Ok(event) = event::read() {
-                events::handle_event(&mut app, event, &mut should_quit).await;
+                handlers::handle_event(&mut app, event, &mut should_quit).await;
             }
         }
     }

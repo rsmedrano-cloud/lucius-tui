@@ -1,83 +1,14 @@
 use std::time::Instant;
+use ratatui::layout::Rect;
 use ratatui::widgets::{ListState, Block, Borders};
 use tokio::sync::mpsc;
 use tui_textarea::TextArea;
-use serde::Deserialize;
 use redis::aio::MultiplexedConnection;
 
 use crate::config;
 use crate::context;
-use crate::mcp::{parse_tool_call, ToolCall}; // Updated path for mcp items
-
-#[derive(Deserialize, Clone)]
-pub struct Model {
-    pub name: String,
-}
-
-#[derive(Deserialize)]
-pub struct TagsResponse {
-    pub models: Vec<Model>,
-}
-
-#[derive(PartialEq)] // Added for comparison in ConfirmationModal
-pub enum LLMResponse {
-    FinalResponse(String),
-    ToolCallDetected(ToolCall),
-}
-
-#[derive(Clone)]
-pub enum AppMode {
-    Chat,
-    Settings,
-    Help,
-    Confirmation(ConfirmationModal),
-}
-
-impl PartialEq for AppMode {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (AppMode::Chat, AppMode::Chat) => true,
-            (AppMode::Settings, AppMode::Settings) => true,
-            (AppMode::Help, AppMode::Help) => true,
-            (AppMode::Confirmation(a), AppMode::Confirmation(b)) => a == b,
-            _ => false,
-        }
-    }
-}
-
-#[derive(PartialEq, Clone, Copy)]
-pub enum Focus {
-    Url,
-    Models,
-}
-
-pub enum ConfirmationModal {
-    ExecuteTool {
-        tool_call: ToolCall,
-        confirm_tx: Option<tokio::sync::oneshot::Sender<bool>>,
-    },
-}
-
-impl Clone for ConfirmationModal {
-    fn clone(&self) -> Self {
-        match self {
-            ConfirmationModal::ExecuteTool { tool_call, .. } => {
-                ConfirmationModal::ExecuteTool {
-                    tool_call: tool_call.clone(),
-                    confirm_tx: None, // Can't clone the sender
-                }
-            }
-        }
-    }
-}
-
-impl PartialEq for ConfirmationModal {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (ConfirmationModal::ExecuteTool { tool_call: a, .. }, ConfirmationModal::ExecuteTool { tool_call: b, .. }) => a == b,
-        }
-    }
-}
+use crate::llm::Model;
+use crate::ui::{AppMode, Focus};
 
 pub struct StatefulList<T> {
     pub state: ListState,
@@ -136,6 +67,8 @@ pub struct App<'a> {
     pub config: config::Config,
     pub status_message: Option<(String, Instant)>,
     pub redis_conn: Option<MultiplexedConnection>,
+    pub selection_range: Option<((usize, usize), (usize, usize))>,
+    pub conversation_area: Rect,
 }
 
 impl<'a> App<'a> {
@@ -198,6 +131,8 @@ impl<'a> App<'a> {
             config: initial_config,
             status_message: None,
             redis_conn,
+            selection_range: None,
+            conversation_area: Rect::default(),
         }
     }
     
@@ -207,88 +142,5 @@ impl<'a> App<'a> {
 
     pub fn scroll_down(&mut self) {
         self.scroll = self.scroll.saturating_add(1);
-    }
-}
-
-pub async fn ping_ollama(url: String) -> bool {
-    let client = reqwest::Client::new();
-    let res = client.get(url).send().await;
-    res.is_ok()
-}
-
-pub async fn fetch_models(url: String) -> Result<Vec<Model>, reqwest::Error> {
-    let client = reqwest::Client::new();
-    let res = client.get(format!("{}/api/tags", url)).send().await?;
-    let tags_response: TagsResponse = res.json().await?;
-    Ok(tags_response.models)
-}
-
-
-pub async fn chat_stream(
-    messages: Vec<String>,
-    model: String,
-    url: String,
-    system_message: Option<String>,
-) -> Result<LLMResponse, reqwest::Error> {
-    let client = reqwest::Client::new();
-    
-    let mut ollama_messages = Vec::new();
-
-    if let Some(sys_msg) = system_message {
-        ollama_messages.push(serde_json::json!({"role": "system", "content": sys_msg}));
-    }
-
-    for msg in messages {
-        if msg.starts_with("You: ") {
-            ollama_messages.push(serde_json::json!({"role": "user", "content": msg.strip_prefix("You: ").unwrap()}));
-        } else if msg.starts_with("Lucius: ") {
-            ollama_messages.push(serde_json::json!({"role": "assistant", "content": msg.strip_prefix("Lucius: ").unwrap()}));
-        } else if msg.starts_with("Tool Result: ") {
-            ollama_messages.push(serde_json::json!({"role": "tool", "content": msg.strip_prefix("Tool Result: ").unwrap()}));
-        } else if msg.starts_with("Tool Call: ") {
-            ollama_messages.push(serde_json::json!({"role": "assistant", "content": msg}));
-        }
-    }
-    
-    let req_body = serde_json::json!({
-        "model": model,
-        "stream": true,
-        "messages": ollama_messages,
-    });
-    
-    let mut res = client
-        .post(format!("{}/api/chat", url))
-        .json(&req_body)
-        .send()
-        .await?;
-
-    let mut full_response = String::new();
-    while let Ok(Some(chunk)) = res.chunk().await {
-        let text = String::from_utf8_lossy(&chunk);
-        for line in text.lines() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            if let Ok(chat_res) = serde_json::from_str::<serde_json::Value>(line) {
-                if let Some(message) = chat_res["message"].as_object() {
-                    if let Some(content) = message["content"].as_str() {
-                        full_response.push_str(content);
-                        if let Some(tool_call) = parse_tool_call(&full_response) {
-                            return Ok(LLMResponse::ToolCallDetected(tool_call));
-                        }
-                    }
-                }
-                if chat_res["done"].as_bool().unwrap_or(false) {
-                    return Ok(LLMResponse::FinalResponse(full_response));
-                }
-            } else {
-                log::error!("Failed to parse stream chunk from /api/chat: {}", line);
-            }
-        }
-    }
-    if let Some(tool_call) = parse_tool_call(&full_response) {
-        Ok(LLMResponse::ToolCallDetected(tool_call))
-    } else {
-        Ok(LLMResponse::FinalResponse(full_response))
     }
 }

@@ -5,7 +5,11 @@ use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
 use ratatui::widgets::{Block, Borders};
 use tokio::sync::mpsc; // Added oneshot
 use tui_textarea::{Input, TextArea};
-use crate::app::{self, App, AppMode, Focus, LLMResponse, ping_ollama, chat_stream, ConfirmationModal};
+use crate::app::{App};
+use crate::ui::{AppMode, Focus, ConfirmationModal};
+use crate::llm::{LLMResponse, ping_ollama, chat_stream, fetch_models};
+use crate::clipboard;
+use crate::mouse;
 use crate::mcp::{self}; // Added submit_task and poll_result
 
 
@@ -60,30 +64,10 @@ pub async fn handle_event(app: &mut App<'_>, event: Event, should_quit: &mut boo
                                 app.scroll = 0;
                             }
                             KeyCode::Char('y') => {
-                                log::info!("Ctrl+Y detected: Attempting to copy last response via wl-copy.");
                                 if let Some(last_response) = app.chat_history.iter().rev().find(|m| m.starts_with("Lucius:")) {
-                                    log::info!("Found last response to copy.");
                                     let content_to_copy = last_response.strip_prefix("Lucius: ").unwrap_or(last_response).trim();
-                                    log::info!("Attempting to copy content: \"{}\"", content_to_copy);
-                                    
-                                    let process = Command::new("wl-copy")
-                                        .stdin(Stdio::piped())
-                                        .spawn();
-
-                                    if let Ok(mut child) = process {
-                                        if let Some(mut stdin) = child.stdin.take() {
-                                            if stdin.write_all(content_to_copy.as_bytes()).is_ok() {
-                                                log::info!("Successfully wrote to wl-copy stdin.");
-                                                app.status_message = Some(("Copied last response to clipboard!".to_string(), Instant::now()));
-                                            } else {
-                                                log::error!("Failed to write to wl-copy stdin.");
-                                            }
-                                        } else {
-                                            log::error!("Could not get stdin for wl-copy process.");
-                                        }
-                                    } else {
-                                        log::error!("Failed to spawn wl-copy process.");
-                                    }
+                                    clipboard::copy_to_clipboard(content_to_copy.to_string());
+                                    app.status_message = Some(("Copied last response to clipboard!".to_string(), Instant::now()));
                                 } else {
                                     log::warn!("Ctrl+Y pressed, but no previous response from Lucius found to copy.");
                                 }
@@ -92,7 +76,7 @@ pub async fn handle_event(app: &mut App<'_>, event: Event, should_quit: &mut boo
                                 app.config.ollama_url = Some(app.url_editor.lines().join(""));
                                 app.config.save();
                                 let url = app.config.ollama_url.clone().unwrap_or_default();
-                                app.models.items = app::fetch_models(url).await.unwrap_or_else(|_| vec![]);
+                                app.models.items = fetch_models(url).await.unwrap_or_else(|_| vec![]);
                                 app.models.state.select(Some(0));
                             }
                             KeyCode::Char('t') => {
@@ -205,6 +189,43 @@ pub async fn handle_event(app: &mut App<'_>, event: Event, should_quit: &mut boo
                 match mouse_event.kind {
                     MouseEventKind::ScrollUp => app.scroll_up(),
                     MouseEventKind::ScrollDown => app.scroll_down(),
+                    MouseEventKind::Down(_) => {
+                        // Start selection
+                        let (x, y) = (mouse_event.column, mouse_event.row);
+                        if let Some(coords) = mouse::get_text_coordinates(app.conversation_area, x, y) {
+                            app.selection_range = Some((coords, coords));
+                        }
+                    }
+                    MouseEventKind::Drag(_) => {
+                        // Update selection
+                        if let Some((start, _)) = app.selection_range {
+                            let (x, y) = (mouse_event.column, mouse_event.row);
+                            if let Some(end) = mouse::get_text_coordinates(app.conversation_area, x, y) {
+                                app.selection_range = Some((start, end));
+                            }
+                        }
+                    }
+                    MouseEventKind::Up(_) => {
+                        // End selection and copy
+                        if let Some(((start_line, start_char), (end_line, end_char))) = app.selection_range {
+                            // This is a simplified logic.
+                            // I need to get the actual text from the chat history.
+                            let mut selected_text = String::new();
+                            for (i, line) in app.chat_history.iter().enumerate() {
+                                if i >= start_line && i <= end_line {
+                                    let start = if i == start_line { start_char } else { 0 };
+                                    let end = if i == end_line { end_char } else { line.len() };
+                                    if start < end {
+                                        selected_text.push_str(&line[start..end]);
+                                        selected_text.push('\n');
+                                    }
+                                }
+                            }
+                            clipboard::copy_to_clipboard(selected_text);
+                            app.status_message = Some(("Copied selection to clipboard!".to_string(), Instant::now()));
+                        }
+                        app.selection_range = None;
+                    }
                     _ => {}
                 }
             },
@@ -212,6 +233,7 @@ pub async fn handle_event(app: &mut App<'_>, event: Event, should_quit: &mut boo
         }
     }
 }
+
 
 pub async fn handle_llm_turn(
     mut redis_conn: Option<redis::aio::MultiplexedConnection>,
