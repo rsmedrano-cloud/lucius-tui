@@ -89,9 +89,9 @@ Alternatively, you can use `cargo run`:
 cargo run --release --bin lucius
 ```
 
-### Running the `lucius-mcp-worker` Agent
+### Running the `lucius-mcp-worker` Agent as a binary
 
-The `lucius-mcp-worker` runs on a target machine in your homelab.
+The `lucius-mcp-worker` can be run as a standalone binary on a target machine in your homelab. It connects to a central Redis instance to receive tasks.
 
 1.  **Build the worker:** If you haven't already, run the workspace build command from the project root:
     ```bash
@@ -105,6 +105,24 @@ The `lucius-mcp-worker` runs on a target machine in your homelab.
     ```bash
     ./target/release/lucius-mcp-worker > mcp-worker.log 2>&1 &
     ```
+
+### Running the `lucius-mcp-worker` as a Docker container
+
+The easiest way to run the `mcp-worker` on a remote machine is to use the provided `Dockerfile`.
+
+1.  **Build the Docker image:**
+    From the `lucius/lucius-mcp-worker` directory inside the project root, run the following command:
+    ```bash
+    docker build -t lucius-mcp-worker:latest .
+    ```
+
+2.  **Run the Docker container:**
+    ```bash
+    docker run -d --name lucius-mcp-worker -e REDIS_HOST=<your_redis_host> lucius-mcp-worker:latest
+    ```
+    Replace `<your_redis_host>` with the IP address or hostname of your Redis server.
+
+
 
 ### Making `lucius` Globally Accessible
 
