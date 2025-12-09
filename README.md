@@ -62,81 +62,57 @@ Lucius is comprised of two main components:
 
 ### Two-Command Install & Build
 
-To get started with both the `lucius` client and the `lucius-mcp-worker` agent, use the following two commands:
+To get started with both the `lucius` client and the `lucius-mcp-worker` agent, use the following two commands from your terminal:
 
 1.  **Clone the Main Repository Recursively:**
     ```bash
-    git clone --recursive https://github.com/rsmedrano-cloud/lucius-tui.git # Replace with your actual TUI repo URL
-    cd lucius-tui # Or whatever you named the cloned directory
+    git clone --recursive https://github.com/rsmedrano-cloud/lucius-tui.git
+    cd lucius-tui
     ```
-    *Note: The `--recursive` flag is crucial. It automatically clones the `lucius-mcp-worker` submodule, which contains the worker's code. If you cloned without `--recursive`, run `git submodule update --init --recursive` from the `lucius-tui` directory.*
+    *Note: The `--recursive` flag is crucial as it also clones the `lucius-mcp-worker` submodule. If you cloned without it, run `git submodule update --init --recursive` from the `lucius-tui` directory.*
 
 2.  **Build Both Components (Workspace Build):**
+    All subsequent commands should be run from the root of the `lucius-tui` directory.
     ```bash
     cargo build --release --workspace
     ```
-    *This command will build both the `lucius` TUI client (from the `lucius` sub-directory) and the `lucius-mcp-worker` agent (from the `lucius-mcp-worker` sub-directory).*
-    *Executables will be found at `target/release/lucius` (for the client) and `target/release/lucius-mcp-worker` (for the worker), relative to the root of this repository.*
+    *This command builds both the `lucius` TUI client and the `lucius-mcp-worker` agent. The executables will be placed in the `target/release` directory at the root of the project.*
 
 ### Running the `lucius` TUI Application
 
-To run the main `lucius` application:
+After building, run the main `lucius` application from the project root:
 ```bash
 ./target/release/lucius
 ```
-Alternatively, you can use `cargo run` from the `lucius` directory:
+Alternatively, you can use `cargo run`:
 ```bash
-cd lucius && cargo run --bin lucius
+cargo run --release --bin lucius
 ```
 
 ### Running the `lucius-mcp-worker` Agent
 
-The `lucius-mcp-worker` is designed to run on a target machine in your homelab. It connects to a central Redis instance to receive tasks.
+The `lucius-mcp-worker` runs on a target machine in your homelab.
 
-1.  **Build (if not done with workspace build):**
-    If you only built the `lucius` client, navigate to the `lucius-mcp-worker` directory and build it:
+1.  **Build the worker:** If you haven't already, run the workspace build command from the project root:
     ```bash
-    cd lucius-mcp-worker && cargo build --release
+    cargo build --release --workspace
     ```
-2.  **Environment Setup**: Ensure `REDIS_HOST` is set in your environment or a `.env` file where the worker is running.
+2.  **Set Environment Variables**: The worker needs to know the address of your Redis server.
     ```bash
     export REDIS_HOST="192.168.1.93" # Replace with your Redis IP/hostname
     ```
-    Or, create a `.env` file in the worker's directory:
-    ```
-    REDIS_HOST=192.168.1.93
-    ```
-
-3.  **Run in Background**: To run the `lucius-mcp-worker` continuously in the background and log its output:
+3.  **Run the worker**: From the project root, run the worker in the background:
     ```bash
-    ./target/release/lucius-mcp-worker > lucius-mcp-worker.log 2>&1 &
+    ./target/release/lucius-mcp-worker > mcp-worker.log 2>&1 &
     ```
-    This command redirects `stdout` and `stderr` to `lucius-mcp-worker.log` and runs the process in the background.
 
 ### Making `lucius` Globally Accessible
 
-To run `lucius` from any directory by simply typing `lucius`, you need to add its location to your system's `PATH`.
-
-**Option 1: Copy to a PATH directory (Recommended for convenience)**
+To run `lucius` from any directory, you can copy the executable to a directory in your system's `PATH`.
 
 ```bash
+# Ensure you are in the lucius-tui project root
 sudo cp target/release/lucius /usr/local/bin/
 ```
-After this, you can just type `lucius` in your terminal.
-
-**Option 2: Add to your shell's PATH (Temporary or Permanent)**
-
-*   **Temporarily (for current session):**
-    ```bash
-    export PATH="/path/to/your/lucius/target/release:$PATH"
-    ```
-
-*   **Permanently (add to shell configuration):**
-    Edit your shell's configuration file (e.g., `~/.bashrc`, `~/.zshrc`, `~/.profile`) and add the `export PATH="..."` line. Then, `source` the file (e.g., `source ~/.bashrc`) or restart your terminal.
-
-    Example for `~/.bashrc`:
-    ```bash
-    echo 'export PATH="/path/to/your/lucius-tui/target/release:$PATH"' >> ~/.bashrc
-    source ~/.bashrc
-    ```
+Now, you should be able to simply type `lucius` in your terminal to start the application.
 
