@@ -2,6 +2,7 @@ use std::time::Instant;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
 use tokio::sync::mpsc;
 use tui_textarea::{Input, TextArea};
+use ratatui::widgets::{Block, Borders};
 use crate::app::{App};
 use crate::ui::{AppMode, Focus, ConfirmationModal};
 use crate::llm::{LLMResponse, ping_ollama, chat_stream, fetch_models};
@@ -120,6 +121,12 @@ pub async fn handle_event(app: &mut App<'_>, event: Event, should_quit: &mut boo
 
                                     let mut textarea = TextArea::default();
                                     textarea.set_placeholder_text("Ask me anything...");
+                                    textarea.set_block(
+                                        Block::default()
+                                            .borders(Borders::ALL)
+                                            .title("Input")
+                                            .border_type(ratatui::widgets::BorderType::Rounded),
+                                    );
                                     app.textarea = textarea;
                                 }
                             }
