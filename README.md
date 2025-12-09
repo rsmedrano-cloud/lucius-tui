@@ -76,13 +76,13 @@ To get started with both the `lucius` client and the `lucius-mcp-worker` agent, 
     cargo build --release --workspace
     ```
     *This command will build both the `lucius` TUI client (from the `lucius` sub-directory) and the `lucius-mcp-worker` agent (from the `lucius-mcp-worker` sub-directory).*
-    *Executables will be found at `lucius/target/release/lucius` (for the client) and `lucius-mcp-worker/target/release/lucius-mcp-worker` (for the worker), relative to the root of this repository.*
+    *Executables will be found at `target/release/lucius` (for the client) and `target/release/lucius-mcp-worker` (for the worker), relative to the root of this repository.*
 
 ### Running the `lucius` TUI Application
 
 To run the main `lucius` application:
 ```bash
-./lucius/target/release/lucius
+./target/release/lucius
 ```
 Alternatively, you can use `cargo run` from the `lucius` directory:
 ```bash
@@ -109,7 +109,7 @@ The `lucius-mcp-worker` is designed to run on a target machine in your homelab. 
 
 3.  **Run in Background**: To run the `lucius-mcp-worker` continuously in the background and log its output:
     ```bash
-    ./lucius-mcp-worker/target/release/lucius-mcp-worker > lucius-mcp-worker.log 2>&1 &
+    ./target/release/lucius-mcp-worker > lucius-mcp-worker.log 2>&1 &
     ```
     This command redirects `stdout` and `stderr` to `lucius-mcp-worker.log` and runs the process in the background.
 
@@ -120,7 +120,7 @@ To run `lucius` from any directory by simply typing `lucius`, you need to add it
 **Option 1: Copy to a PATH directory (Recommended for convenience)**
 
 ```bash
-sudo cp lucius/target/release/lucius /usr/local/bin/
+sudo cp target/release/lucius /usr/local/bin/
 ```
 After this, you can just type `lucius` in your terminal.
 
@@ -136,7 +136,7 @@ After this, you can just type `lucius` in your terminal.
 
     Example for `~/.bashrc`:
     ```bash
-    echo 'export PATH="/path/to/your/lucius/target/release:$PATH"' >> ~/.bashrc
+    echo 'export PATH="/path/to/your/lucius-tui/target/release:$PATH"' >> ~/.bashrc
     source ~/.bashrc
     ```
 
