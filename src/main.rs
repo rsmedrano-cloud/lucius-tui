@@ -42,25 +42,39 @@ async fn main() -> io::Result<()> {
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
 
     // 3. Load Config and Initial Models
+    log::info!("Loading configuration...");
     let config = config::Config::load();
+    log::info!("Configuration loaded.");
     let initial_ollama_url = config.ollama_url.clone().unwrap_or_else(|| "http://192.168.1.42:11434".to_string());
+    
+    log::info!("Fetching initial models from {}...", initial_ollama_url);
     let models = fetch_models(initial_ollama_url.clone()).await.unwrap_or_else(|e| {
         log::error!("Failed to fetch initial models: {}", e);
         vec![]
     });
+    log::info!("Initial models fetched.");
 
     // 4. Initialize App
+    log::info!("Initializing App state...");
     let mut app = App::new(models, config.clone()).await;
+    log::info!("App state initialized.");
 
     // 5. Initial Setup Flow (e.g., go to Settings if no URL/model selected)
+    log::info!("Checking initial setup flow...");
     if app.config.ollama_url.is_none() || app.models.state.selected().is_none() {
         app.mode = AppMode::Settings;
+        log::info!("App mode set to Settings.");
         if app.config.ollama_url.is_none() {
+            log::info!("Pinging Ollama for initial status (no URL configured)...");
             app.status = ping_ollama(initial_ollama_url).await;
+            log::info!("Initial Ollama status: {}", app.status);
         } else if let Some(url) = &app.config.ollama_url {
+            log::info!("Pinging Ollama for initial status (configured URL: {})...", url);
             app.status = ping_ollama(url.clone()).await;
+            log::info!("Initial Ollama status: {}", app.status);
         }
     }
+    log::info!("Initial setup flow complete.");
     
     // 6. Main Event Loop
     let mut should_quit = false;
