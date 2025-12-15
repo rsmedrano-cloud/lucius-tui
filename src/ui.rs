@@ -1,4 +1,4 @@
-use crate::mcp::ToolCall;
+use lucius::mcp::ToolCall;
 use crate::llm::Model;
 
 #[derive(Clone)]
@@ -46,6 +46,7 @@ impl PartialEq for AppMode {
 #[derive(PartialEq, Clone, Copy)]
 pub enum Focus {
     Url,
+    McpUrl,
     Models,
 }
 

@@ -31,7 +31,7 @@ impl SharedState {
             log::info!("No LUCIUS.md context found.");
         }
 
-        let redis_host = std::env::var("REDIS_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+        let redis_host = initial_config.mcp_redis_host.clone().unwrap_or_else(|| "127.0.0.1".to_string());
         let redis_url = format!("redis://{}/", redis_host);
         let redis_conn = match redis::Client::open(redis_url) {
             Ok(client) => match client.get_multiplexed_async_connection().await {
@@ -70,6 +70,7 @@ pub struct App<'a> {
     pub model_list_state: ListState, // The UI state for the list
     pub textarea: TextArea<'a>,
     pub url_editor: TextArea<'a>,
+    pub mcp_url_editor: TextArea<'a>,
     pub focus: Focus,
     pub scroll: u16,
     pub selection_range: Option<((usize, usize), (usize, usize))>,
@@ -100,10 +101,19 @@ impl<'a> App<'a> {
                 .title("Ollama URL"),
         );
 
+        let mcp_url_editor_content = initial_config.mcp_redis_host.clone().unwrap_or_default();
+        let mut mcp_url_editor = TextArea::new(vec![mcp_url_editor_content]);
+        mcp_url_editor.set_block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("MCP Redis Host"),
+        );
+
         App {
             model_list_state: ListState::default(),
             textarea,
             url_editor,
+            mcp_url_editor,
             focus: Focus::Url,
             scroll: 0,
             selection_range: None,

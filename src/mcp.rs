@@ -5,6 +5,7 @@ use lazy_static::lazy_static;
 use redis::aio::MultiplexedConnection;
 use redis::AsyncCommands;
 use uuid::Uuid;
+use log::{error, info}; // Import log::error and info
 
 // --- Task & Tool Data Structures ---
 
@@ -47,7 +48,7 @@ pub fn parse_tool_call(response: &str) -> Option<ToolCall> {
             match serde_json::from_str(json_str.as_str()) {
                 Ok(tool_call) => return Some(tool_call),
                 Err(e) => {
-                    log::error!("Failed to parse tool call JSON: {} from string: {}", e, json_str.as_str());
+                    error!("Failed to parse tool call JSON: {} from string: {}", e, json_str.as_str());
                 }
             }
         }
@@ -85,7 +86,7 @@ pub async fn submit_task(conn: &mut MultiplexedConnection, tool_call: &ToolCall)
     let rpush_result: redis::RedisResult<()> = conn.rpush(queue_key, &task_json).await;
     match rpush_result {
         Ok(_) => {
-            log::info!("Pushed task {} to Redis queue '{}'", task_id, queue_key);
+            info!("Pushed task {} to Redis queue '{}'", task_id, queue_key);
             Ok(task_id)
         },
         Err(e) => Err(format!("Failed to push task to Redis: {}", e)),
@@ -94,7 +95,7 @@ pub async fn submit_task(conn: &mut MultiplexedConnection, tool_call: &ToolCall)
 
 pub async fn poll_result(conn: &mut MultiplexedConnection, task_id: &str) -> Result<String, String> {
     let result_key = format!("mcp::result::{}", task_id);
-    log::info!("Waiting for result on key '{}'", result_key);
+    info!("Waiting for result on key '{}'", result_key);
 
     let blpop_result: redis::RedisResult<Vec<String>> = conn.blpop(&result_key, 30.0).await; // 30 second timeout
 

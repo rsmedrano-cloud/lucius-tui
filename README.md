@@ -45,6 +45,10 @@ A blazing fast, lightweight (sub-20MB RAM) TUI for local LLMs, written in Rust.
 *   **Bottom Bar Information**: The bottom of the TUI dynamically displays the current working directory and the active LLM model.
 *   **Improved Rendering**: The conversation and input boxes use rounded borders and internal padding for a cleaner look and to improve the native mouse selection experience.
 
+## Changelog
+
+All notable changes to this project are documented in `CHANGELOG.md`. This project adheres to [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) format and [Semantic Versioning](https://semver.org/spec/v2.0.0.html). For a detailed history of changes, including new features, bug fixes, and improvements, please refer to the `CHANGELOG.md` file in the project's root directory.
+
 ## Requirements
 
 *   **Rust Toolchain**: This project requires a Rust toolchain version `1.70.0` or newer. It is recommended to use `rustup` to manage your Rust installations:
@@ -89,38 +93,61 @@ Alternatively, you can use `cargo run`:
 cargo run --release --bin lucius
 ```
 
-### Running the `lucius-mcp-worker` Agent as a binary
+### Deploying `lucius-mcp-worker` on Docker Swarm
 
-The `lucius-mcp-worker` can be run as a standalone binary on a target machine in your homelab. It connects to a central Redis instance to receive tasks.
+To set up a robust distributed Homelab Management Control Plane, you can deploy the `lucius-mcp-worker` agents on your Docker Swarm.
 
-1.  **Build the worker:** If you haven't already, run the workspace build command from the project root:
-    ```bash
-    cargo build --release --workspace
-    ```
-2.  **Set Environment Variables**: The worker needs to know the address of your Redis server.
-    ```bash
-    export REDIS_HOST="192.168.1.93" # Replace with your Redis IP/hostname
-    ```
-3.  **Run the worker**: From the project root, run the worker in the background:
-    ```bash
-    ./target/release/lucius-mcp-worker > mcp-worker.log 2>&1 &
-    ```
+**Prerequisites:**
+*   A running Docker Swarm.
+*   Passwordless SSH access to your Swarm master node (e.g., `ssh user@100.73.97.118`).
+*   Docker CLI installed on your local machine (where Lucius TUI runs) to build and push images.
 
-### Running the `lucius-mcp-worker` as a Docker container
+**1. Deploy Redis on Docker Swarm:**
+First, deploy a Redis service on your Swarm. It's recommended to constrain it to a manager node for stability.
+```bash
+docker service create \
+  --name redis \
+  --publish published=6379,target=6379 \
+  --constraint 'node.role == manager' \
+  redis:7.2-alpine
+```
 
-The easiest way to run the `mcp-worker` on a remote machine is to use the provided `Dockerfile`.
+**2. Build and Push `lucius-mcp-worker` Docker Image:**
+From your local machine, navigate to the `lucius/lucius-mcp-worker` directory within your cloned `lucius-tui` project and build the Docker image. You'll need to push this image to a Docker registry accessible by your Swarm nodes (e.g., Docker Hub, or a private registry).
 
-1.  **Build the Docker image:**
-    From the `lucius/lucius-mcp-worker` directory inside the project root, run the following command:
-    ```bash
-    docker build -t lucius-mcp-worker:latest .
-    ```
+```bash
+# Navigate to the worker's Dockerfile directory
+cd lucius/lucius-mcp-worker
 
-2.  **Run the Docker container:**
-    ```bash
-    docker run -d --name lucius-mcp-worker -e REDIS_HOST=<your_redis_host> lucius-mcp-worker:latest
-    ```
-    Replace `<your_redis_host>` with the IP address or hostname of your Redis server.
+# Build the Docker image
+docker build -t <your_docker_registry>/lucius-mcp-worker:latest .
+
+# Push the image to your registry
+docker push <your_docker_registry>/lucius-mcp-worker:latest
+```
+Remember to replace `<your_docker_registry>` with your actual Docker Hub username or private registry address.
+
+**3. Deploy `lucius-mcp-worker` as a Global Service on Docker Swarm:**
+SSH into your Swarm master node (e.g., `ssh user@100.73.97.118`) and deploy the `mcp-worker` as a global service. This ensures one worker agent runs on every node in your Swarm, each with access to the Docker socket for executing commands.
+
+```bash
+docker service create \
+  --name mcp-worker \
+  --mount type=bind,source=/var/run/docker.sock,destination=/var/run/docker.sock \
+  --env REDIS_HOST=redis \
+  --mode global \
+  <your_docker_registry>/lucius-mcp-worker:latest
+```
+*   `--mount type=bind,source=/var/run/docker.sock,destination=/var/run/docker.sock`: Allows the worker to interact with the Docker daemon on the host.
+*   `--env REDIS_HOST=redis`: Configures the worker to connect to the Redis service named `redis` within the Swarm's overlay network.
+*   `--mode global`: Deploys one instance of the worker on every node in your Swarm.
+
+**4. Configuring Lucius TUI for Remote MCP:**
+Once the Redis and `mcp-worker` services are running on your Swarm, configure your local Lucius TUI client to connect to the remote Redis instance.
+In the Lucius TUI application, press `Ctrl+S` to navigate to the `Settings` screen.
+Enter the **IP address or hostname of your Swarm master node** (e.g., `100.73.97.118`) into the "MCP Redis Host" field. This is the address Lucius will use to connect to the Redis service deployed on your Swarm.
+
+This setup enables your Lucius TUI to send tasks to the central Redis, which are then picked up and executed by the distributed `mcp-worker` agents across your homelab.
 
 
 

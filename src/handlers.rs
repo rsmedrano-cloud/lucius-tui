@@ -101,17 +101,30 @@ pub async fn handle_event(app: &mut App<'_>, state: &mut SharedState, event: Eve
                         },
                         AppMode::Settings => match app.focus {
                             Focus::Url => match key.code {
-                                KeyCode::Tab | KeyCode::Enter => {
-                                    app.focus = Focus::Models;
+                                KeyCode::Tab => {
                                     state.config.ollama_url = Some(app.url_editor.lines().join(""));
                                     state.config.save();
+                                    app.focus = Focus::McpUrl;
                                 }
-                                KeyCode::Esc => {
-                                    state.mode = AppMode::Chat;
+                                KeyCode::Enter | KeyCode::Esc => {
                                     state.config.ollama_url = Some(app.url_editor.lines().join(""));
                                     state.config.save();
+                                    state.mode = AppMode::Chat;
                                 }
                                 _ => { app.url_editor.input(Input::from(key)); }
+                            },
+                            Focus::McpUrl => match key.code {
+                                KeyCode::Tab => {
+                                    state.config.mcp_redis_host = Some(app.mcp_url_editor.lines().join(""));
+                                    state.config.save();
+                                    app.focus = Focus::Models;
+                                }
+                                KeyCode::Enter | KeyCode::Esc => {
+                                    state.config.mcp_redis_host = Some(app.mcp_url_editor.lines().join(""));
+                                    state.config.save();
+                                    state.mode = AppMode::Chat;
+                                }
+                                _ => { app.mcp_url_editor.input(Input::from(key)); }
                             },
                             Focus::Models => match key.code {
                                 KeyCode::Esc | KeyCode::Enter => {

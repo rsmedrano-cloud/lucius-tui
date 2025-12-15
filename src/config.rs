@@ -8,6 +8,7 @@ const CONFIG_FILENAME: &str = "lucius_config.toml";
 pub struct Config {
     pub ollama_url: Option<String>,
     pub selected_model: Option<String>,
+    pub mcp_redis_host: Option<String>,
 }
 
 impl Config {

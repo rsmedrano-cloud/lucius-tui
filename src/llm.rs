@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use crate::mcp::{parse_tool_call, ToolCall};
+use lucius::mcp::{parse_tool_call, ToolCall};
 
 #[derive(Deserialize, Clone)]
 pub struct Model {

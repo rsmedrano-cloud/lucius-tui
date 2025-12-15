@@ -102,20 +102,29 @@ pub fn draw_ui(f: &mut Frame, app: &mut App, state: &SharedState) {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Length(3),
-                    Constraint::Length(3),
-                    Constraint::Min(0),
-                    Constraint::Length(1),
+                    Constraint::Length(3), // Ollama URL editor
+                    Constraint::Length(3), // MCP Redis Host editor
+                    Constraint::Length(3), // Status
+                    Constraint::Min(0),    // Models list
                 ])
                 .split(area);
 
-            let url_editor_block = Block::default().borders(Borders::ALL).title("Ollama URL");
+            let ollama_url_editor_block = Block::default().borders(Borders::ALL).title("Ollama URL");
             if let Focus::Url = app.focus {
-                app.url_editor.set_block(url_editor_block.clone().border_style(Style::default().fg(Color::LightCyan)));
+                app.url_editor.set_block(ollama_url_editor_block.clone().border_style(Style::default().fg(Color::LightCyan)));
             } else {
-                app.url_editor.set_block(url_editor_block);
+                app.url_editor.set_block(ollama_url_editor_block);
             }
-            f.render_widget(&app.url_editor, chunks[0]);
+            f.render_widget(app.url_editor.widget(), chunks[0]);
+
+            let mcp_url_editor_block = Block::default().borders(Borders::ALL).title("MCP Redis Host");
+            if let Focus::McpUrl = app.focus {
+                app.mcp_url_editor.set_block(mcp_url_editor_block.clone().border_style(Style::default().fg(Color::LightCyan)));
+            } else {
+                app.mcp_url_editor.set_block(mcp_url_editor_block);
+            }
+            f.render_widget(app.mcp_url_editor.widget(), chunks[1]);
+
 
             let (status_text, status_color) = if state.status {
                 ("Status: Connected", Color::Green)
@@ -125,7 +134,7 @@ pub fn draw_ui(f: &mut Frame, app: &mut App, state: &SharedState) {
             let status = Paragraph::new(status_text)
                 .style(Style::default().fg(status_color))
                 .block(Block::default().title("Status").borders(Borders::ALL));
-            f.render_widget(status, chunks[1]);
+            f.render_widget(status, chunks[2]);
             
             let models_block = Block::default().title("Models").borders(Borders::ALL);
             let items: Vec<ListItem> = state.models.iter().map(|i| ListItem::new(i.name.as_str())).collect();
@@ -139,7 +148,7 @@ pub fn draw_ui(f: &mut Frame, app: &mut App, state: &SharedState) {
                 .highlight_symbol(">>");
 
             // Correctly render the stateful widget
-            f.render_stateful_widget(list, chunks[2], &mut app.model_list_state);
+            f.render_stateful_widget(list, chunks[3], &mut app.model_list_state);
         }
         AppMode::Help => {
             let help_block = Block::default().title("Help").borders(Borders::ALL);
