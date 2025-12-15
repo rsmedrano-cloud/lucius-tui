@@ -77,7 +77,10 @@ pub async fn submit_task(conn: &mut MultiplexedConnection, tool_call: &ToolCall)
         Err(e) => return Err(format!("Failed to serialize task: {}", e)),
     };
 
-    let queue_key = "mcp::tasks::all";
+    let queue_key = match task.task_type {
+        TaskType::SHELL => "mcp::tasks::shell",
+        TaskType::DOCKER => "mcp::tasks::docker",
+    };
     
     let rpush_result: redis::RedisResult<()> = conn.rpush(queue_key, &task_json).await;
     match rpush_result {

@@ -1,4 +1,5 @@
 use crate::mcp::ToolCall;
+use crate::llm::Model;
 
 #[derive(Clone)]
 pub enum AppMode {
@@ -7,6 +8,28 @@ pub enum AppMode {
     Help,
     Confirmation(ConfirmationModal),
 }
+
+// --- Enums for Background Task Communication ---
+
+/// Actions that the UI thread can send to the background worker task.
+#[derive(Clone)]
+pub enum Action {
+    /// Trigger a refresh of the Ollama models and connection status.
+    RefreshModelsAndStatus,
+    /// Send a new chat message to the LLM.
+    SendMessage(String),
+}
+
+/// Updates that the background worker task can send back to the UI thread.
+pub enum Update {
+    /// A new list of models has been fetched.
+    Models(Vec<Model>),
+    /// The connection status of the Ollama server has been checked.
+    Status(bool),
+    /// A chunk of the LLM's response has been received.
+    LLMChunk(String),
+}
+
 
 impl PartialEq for AppMode {
     fn eq(&self, other: &Self) -> bool {

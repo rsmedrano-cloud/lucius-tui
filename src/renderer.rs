@@ -7,13 +7,14 @@ use ratatui::{
 };
 use termimad::MadSkin;
 
-use crate::app::{App};
+use crate::app::{App, SharedState};
 use crate::ui::{AppMode, Focus, ConfirmationModal, HELP_MESSAGE, ASCII_ART};
 
-pub fn draw_ui(f: &mut Frame, app: &mut App) {
+pub fn draw_ui(f: &mut Frame, app: &mut App, state: &SharedState) {
     let area = f.area();
     
-    match app.mode {
+    // Render based on the current mode from the shared state.
+    match &state.mode {
         AppMode::Chat => {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -27,12 +28,11 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
                 .split(area);
 
             // ASCII Art
-            let ascii_art = Paragraph::new(ASCII_ART)
-                .alignment(Alignment::Center);
+            let ascii_art = Paragraph::new(ASCII_ART).alignment(Alignment::Center);
             f.render_widget(ascii_art, chunks[0]);
             
-            // Conversation History
-            let history_text: String = app.chat_history.join("\n");
+            // Conversation History from shared state
+            let history_text: String = state.chat_history.join("\n");
             let markdown_text = MadSkin::default().term_text(&history_text).to_string();
 
             let conversation_block = Block::default()
@@ -59,22 +59,23 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
             f.render_widget(history, chunks[1]);
             app.conversation_area = chunks[1];
 
-            // Status line
-            let status_text = if let Some((msg, _)) = &app.status_message {
+            // Status line from shared state
+            let status_text = if let Some((msg, _)) = &state.status_message {
                 msg.clone()
             } else {
-                let lucius_md_count = if app.lucius_context.is_some() { 1 } else { 0 };
-                let mcp_server_count = if app.redis_conn.is_some() { 1 } else { 0 };
+                let lucius_md_count = if state.lucius_context.is_some() { 1 } else { 0 };
+                let mcp_server_count = if state.redis_conn.is_some() { 1 } else { 0 };
                 format!("using: {} LUCIUS.md | {} MCP server", lucius_md_count, mcp_server_count)
             };
             let status_line = Paragraph::new(status_text)
-                .style(if app.status_message.is_some() {
+                .style(if state.status_message.is_some() {
                     Style::default().fg(Color::Green)
                 } else {
                     Style::default().fg(Color::DarkGray)
                 });
             f.render_widget(status_line, chunks[2]);
 
+            // UI-specific widgets from App
             f.render_widget(&app.textarea, chunks[3]);
             
             let bottom_chunks = Layout::default()
@@ -89,7 +90,7 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
                 .style(Style::default().fg(Color::Blue));
             f.render_widget(dir_paragraph, bottom_chunks[0]);
 
-            let active_model_name = app.models.items.get(app.models.state.selected().unwrap_or(0))
+            let active_model_name = state.models.get(app.model_list_state.selected().unwrap_or(0))
                 .map(|model| model.name.clone())
                 .unwrap_or_else(|| "No model selected".to_string());
             let model_paragraph = Paragraph::new(format!("Model: {}", active_model_name))
@@ -108,9 +109,7 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
                 ])
                 .split(area);
 
-            let url_editor_block = Block::default()
-                .borders(Borders::ALL)
-                .title("Ollama URL");
+            let url_editor_block = Block::default().borders(Borders::ALL).title("Ollama URL");
             if let Focus::Url = app.focus {
                 app.url_editor.set_block(url_editor_block.clone().border_style(Style::default().fg(Color::LightCyan)));
             } else {
@@ -118,7 +117,7 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
             }
             f.render_widget(&app.url_editor, chunks[0]);
 
-            let (status_text, status_color) = if app.status {
+            let (status_text, status_color) = if state.status {
                 ("Status: Connected", Color::Green)
             } else {
                 ("Status: Disconnected", Color::Red)
@@ -128,10 +127,8 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
                 .block(Block::default().title("Status").borders(Borders::ALL));
             f.render_widget(status, chunks[1]);
             
-            let models_block = Block::default()
-                .title("Models")
-                .borders(Borders::ALL);
-            let items: Vec<ListItem> = app.models.items.iter().map(|i| ListItem::new(i.name.as_str())).collect();
+            let models_block = Block::default().title("Models").borders(Borders::ALL);
+            let items: Vec<ListItem> = state.models.iter().map(|i| ListItem::new(i.name.as_str())).collect();
             let list = List::new(items)
                 .block(if let Focus::Models = app.focus {
                     models_block.border_style(Style::default().fg(Color::LightCyan))
@@ -141,48 +138,17 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
                 .highlight_style(Style::default().add_modifier(Modifier::BOLD))
                 .highlight_symbol(">>");
 
-            f.render_stateful_widget(list, chunks[2], &mut app.models.state);
+            // Correctly render the stateful widget
+            f.render_stateful_widget(list, chunks[2], &mut app.model_list_state);
         }
         AppMode::Help => {
-            let help_block = Block::default()
-                .title("Help")
-                .borders(Borders::ALL);
-            let help_paragraph = Paragraph::new(HELP_MESSAGE)
-                .wrap(Wrap { trim: true })
-                .block(help_block);
+            let help_block = Block::default().title("Help").borders(Borders::ALL);
+            let help_paragraph = Paragraph::new(HELP_MESSAGE).wrap(Wrap { trim: true }).block(help_block);
             f.render_widget(help_paragraph, area);
         }
         AppMode::Confirmation(ConfirmationModal::ExecuteTool { ref tool_call, .. }) => {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(7),
-                    Constraint::Min(0),
-                    Constraint::Length(1),
-                    Constraint::Length(3),
-                    Constraint::Length(1),
-                ])
-                .split(area);
-
-            let ascii_art = Paragraph::new(ASCII_ART).alignment(Alignment::Center);
-            f.render_widget(ascii_art, chunks[0]);
-            
-            let history_text: String = app.chat_history.join("\n");
-            let markdown_text = MadSkin::default().term_text(&history_text).to_string();
-
-            let conversation_block = Block::default()
-                .title("Conversation")
-                .borders(Borders::ALL)
-                .border_type(ratatui::widgets::BorderType::Rounded)
-                .padding(Padding::new(1, 1, 1, 1));
-            let history = Paragraph::new(Text::raw(markdown_text))
-                .wrap(Wrap { trim: true })
-                .scroll((app.scroll, 0))
-                .block(conversation_block);
-            f.render_widget(history, chunks[1]);
-            app.conversation_area = chunks[1];
-
-            f.render_widget(&app.textarea, chunks[3]);
+            // Re-draw the chat UI in the background
+            draw_ui(f, app, &state); // This might not be perfect, but it shows the context
 
             let modal_width = 60;
             let modal_height = 8;
@@ -216,10 +182,7 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
                 .title("CONFIRM ACTION")
                 .borders(Borders::ALL)
                 .style(Style::default().bg(Color::DarkGray).fg(Color::White));
-            let paragraph = Paragraph::new(text)
-                .block(block)
-                .alignment(Alignment::Center)
-                .wrap(Wrap { trim: true });
+            let paragraph = Paragraph::new(text).block(block).alignment(Alignment::Center).wrap(Wrap { trim: true });
             f.render_widget(paragraph, popup_area);
         }
     }

@@ -1,20 +1,16 @@
 use std::time::Instant;
-use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
-use tokio::sync::mpsc;
+use crossterm::event::{Event, KeyCode, KeyModifiers, MouseEventKind};
 use tui_textarea::{Input, TextArea};
 use ratatui::widgets::{Block, Borders};
-use crate::app::{App};
-use crate::ui::{AppMode, Focus, ConfirmationModal};
-use crate::llm::{LLMResponse, ping_ollama, chat_stream, fetch_models};
-use crate::clipboard;
+use crate::app::{App, SharedState};
+use crate::ui::{AppMode, Focus, ConfirmationModal, Action};
+// use crate::clipboard;
 use crate::mouse;
-use crate::mcp::{self};
 
-
-pub async fn handle_event(app: &mut App<'_>, event: Event, should_quit: &mut bool) {
+pub async fn handle_event(app: &mut App<'_>, state: &mut SharedState, event: Event, should_quit: &mut bool) {
     log::info!("Handling event: {:?}", event);
-    // Check if app.mode is Confirmation, handle its events then skip other processing
-    if let AppMode::Confirmation(ConfirmationModal::ExecuteTool { tool_call: _, confirm_tx }) = &mut app.mode {
+    
+    if let AppMode::Confirmation(ConfirmationModal::ExecuteTool { tool_call: _, confirm_tx }) = &mut state.mode {
         if let Event::Key(key) = event {
             if key.kind == crossterm::event::KeyEventKind::Press {
                 match key.code {
@@ -22,13 +18,13 @@ pub async fn handle_event(app: &mut App<'_>, event: Event, should_quit: &mut boo
                         if let Some(tx) = confirm_tx.take() {
                             let _ = tx.send(true);
                         }
-                        app.mode = AppMode::Chat; // Exit modal
+                        state.mode = AppMode::Chat; // Exit modal
                     }
                     KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
                         if let Some(tx) = confirm_tx.take() {
                             let _ = tx.send(false);
                         }
-                        app.mode = AppMode::Chat; // Exit modal
+                        state.mode = AppMode::Chat; // Exit modal
                     }
                     _ => {}
                 }
@@ -41,144 +37,102 @@ pub async fn handle_event(app: &mut App<'_>, event: Event, should_quit: &mut boo
         Event::Key(key) => {
             log::info!("Key event: {:?}", key);
             if key.kind == crossterm::event::KeyEventKind::Press {
-                // Handle global shortcuts first
                 if key.modifiers == KeyModifiers::CONTROL {
                     match key.code {
                         KeyCode::Char('h') => {
-                            app.mode = match app.mode {
+                            state.mode = match state.mode {
                                 AppMode::Help => AppMode::Chat,
                                 _ => AppMode::Help,
                             };
                         }
-                        KeyCode::Char('q') => {
-                            *should_quit = true;
-                        }
+                        KeyCode::Char('q') => *should_quit = true,
                         KeyCode::Char('s') => {
-                            app.mode = AppMode::Settings;
-                            let url = app.config.ollama_url.clone().unwrap_or_default();
-                            app.status = ping_ollama(url).await;
+                            state.mode = AppMode::Settings;
+                            let _ = app.action_tx.try_send(Action::RefreshModelsAndStatus);
                         }
                         KeyCode::Char('l') => {
-                            app.chat_history.clear();
+                            state.chat_history.clear();
                             app.scroll = 0;
                         }
-                                                    KeyCode::Char('y') => {
-                                                        if let Some(last_response) = app.chat_history.iter().rev().find(|m| m.starts_with("Lucius:")) {
-                                                            let content_to_copy = last_response.strip_prefix("Lucius: ").unwrap_or(last_response).trim();
-                                                            clipboard::copy_to_clipboard(content_to_copy.to_string()).await;
-                                                            app.status_message = Some(("Copied last response to clipboard!".to_string(), Instant::now()));
-                                                        } else {
-                                                            log::warn!("Ctrl+Y pressed, but no previous response from Lucius found to copy.");
-                                                        }
-                                                    }                        KeyCode::Char('r') if matches!(app.mode, AppMode::Settings) => {
-                            app.config.ollama_url = Some(app.url_editor.lines().join(""));
-                            app.config.save();
-                            let url = app.config.ollama_url.clone().unwrap_or_default();
-                            app.models.items = fetch_models(url).await.unwrap_or_else(|_| vec![]);
-                            app.models.state.select(Some(0));
+                        KeyCode::Char('c') | KeyCode::Char('y') => {
+                            // if app.selection_range.is_none() {
+                            //     if let Some(last_response) = state.chat_history.iter().rev().find(|m| m.starts_with("Lucius:")) {
+                            //         let content_to_copy = last_response.strip_prefix("Lucius: ").unwrap_or(last_response).trim();
+                            //         clipboard::copy_to_clipboard(content_to_copy.to_string()).await;
+                            //         state.status_message = Some(("Copied last response to clipboard!".to_string(), Instant::now()));
+                            //     } else {
+                            //         log::warn!("Ctrl+C pressed, but no previous response from Lucius found to copy.");
+                            //     }
+                            // }
+                        }
+                        KeyCode::Char('r') if matches!(state.mode, AppMode::Settings) => {
+                            state.config.ollama_url = Some(app.url_editor.lines().join(""));
+                            state.config.save();
+                            let _ = app.action_tx.try_send(Action::RefreshModelsAndStatus);
                         }
                         KeyCode::Char('t') => {
-                            if app.redis_conn.is_some() {
-                                app.status_message = Some(("MCP is connected via Redis.".to_string(), Instant::now()));
+                            state.status_message = if state.redis_conn.is_some() {
+                                Some(("MCP is connected via Redis.".to_string(), Instant::now()))
                             } else {
-                                app.status_message = Some(("MCP Redis client not connected.".to_string(), Instant::now()));
-                            }
+                                Some(("MCP Redis client not connected.".to_string(), Instant::now()))
+                            };
                         }
-                        _ => {
-                            // If no global Ctrl shortcut matches, do nothing.
-                        }
+                        _ => {}
                     }
                 } else {
-                    // Handle non-Ctrl keys based on mode
-                    match &mut app.mode { // Mutable reference to app.mode
+                    match &mut state.mode {
                         AppMode::Chat => match key.code {
                             KeyCode::Enter => {
                                 let input = app.textarea.lines().join("\n");
                                 if !input.trim().is_empty() {
-                                    let model = app.models.items.get(app.models.state.selected().unwrap_or(0))
-                                        .map(|model| model.name.clone())
-                                        .unwrap_or_else(|| "No model selected".to_string());
-                                    let url = app.config.ollama_url.clone().unwrap_or_default();
-                                    app.chat_history.push(format!("You: {}", input));
+                                    state.chat_history.push(format!("You: {}", input));
                                     app.scroll = u16::MAX;
-                                    
-                                    let response_tx_clone = app.response_tx.clone();
-                                    let lucius_context_clone = app.lucius_context.clone();
-                                    let chat_history_clone = app.chat_history.clone();
-                                    let redis_conn_clone = app.redis_conn.clone();
-                                    
-                                    tokio::spawn(async move {
-                                        handle_llm_turn(
-                                            redis_conn_clone,
-                                            chat_history_clone,
-                                            model,
-                                            url,
-                                            lucius_context_clone,
-                                            response_tx_clone,
-                                        )
-                                        .await;
-                                    });
+                                    let _ = app.action_tx.try_send(Action::SendMessage(input));
 
                                     let mut textarea = TextArea::default();
                                     textarea.set_placeholder_text("Ask me anything...");
                                     textarea.set_block(
-                                        Block::default()
-                                            .borders(Borders::ALL)
-                                            .title("Input")
-                                            .border_type(ratatui::widgets::BorderType::Rounded),
+                                        Block::default().borders(Borders::ALL).title("Input").border_type(ratatui::widgets::BorderType::Rounded),
                                     );
                                     app.textarea = textarea;
                                 }
                             }
-                            _ => {
-                                app.textarea.input(Input::from(key));
-                            }
+                            _ => { app.textarea.input(Input::from(key)); }
                         },
                         AppMode::Settings => match app.focus {
                             Focus::Url => match key.code {
                                 KeyCode::Tab | KeyCode::Enter => {
                                     app.focus = Focus::Models;
-                                    app.config.ollama_url = Some(app.url_editor.lines().join(""));
-                                    app.config.save();
+                                    state.config.ollama_url = Some(app.url_editor.lines().join(""));
+                                    state.config.save();
                                 }
                                 KeyCode::Esc => {
-                                    app.mode = AppMode::Chat;
-                                    app.config.ollama_url = Some(app.url_editor.lines().join(""));
-                                    app.config.save();
+                                    state.mode = AppMode::Chat;
+                                    state.config.ollama_url = Some(app.url_editor.lines().join(""));
+                                    state.config.save();
                                 }
-                                _ => {
-                                    app.url_editor.input(Input::from(key));
-                                }
+                                _ => { app.url_editor.input(Input::from(key)); }
                             },
                             Focus::Models => match key.code {
-                                KeyCode::Esc => {
-                                    if let Some(selected_index) = app.models.state.selected() {
-                                        app.config.selected_model = app.models.items.get(selected_index).map(|m| m.name.clone());
-                                        app.config.save();
+                                KeyCode::Esc | KeyCode::Enter => {
+                                    if let Some(selected_index) = app.model_list_state.selected() {
+                                        state.config.selected_model = state.models.get(selected_index).map(|m| m.name.clone());
+                                        state.config.save();
                                     }
-                                    app.mode = AppMode::Chat;
+                                    state.mode = AppMode::Chat;
                                 }
-                                KeyCode::Down => app.models.next(),
-                                KeyCode::Up => app.models.previous(),
-                                KeyCode::Tab => {
-                                    app.focus = Focus::Url;
-                                }
-                                KeyCode::Enter => {
-                                    if let Some(selected_index) = app.models.state.selected() {
-                                        app.config.selected_model = app.models.items.get(selected_index).map(|m| m.name.clone());
-                                        app.config.save();
-                                    }
-                                    app.mode = AppMode::Chat;
-                                }
-                                _ => {} 
+                                KeyCode::Down => app.models_next(state.models.len()),
+                                KeyCode::Up => app.models_previous(state.models.len()),
+                                KeyCode::Tab => { app.focus = Focus::Url; }
+                                _ => {}
                             },
                         },
                         AppMode::Help => {
                             if key.code == KeyCode::Esc {
-                                app.mode = AppMode::Chat;
+                                state.mode = AppMode::Chat;
                             }
                         }
-                        AppMode::Confirmation(_) => {} 
+                        AppMode::Confirmation(_) => {}
                     }
                 }
             }
@@ -188,14 +142,12 @@ pub async fn handle_event(app: &mut App<'_>, event: Event, should_quit: &mut boo
                 MouseEventKind::ScrollUp => app.scroll_up(),
                 MouseEventKind::ScrollDown => app.scroll_down(),
                 MouseEventKind::Down(_) => {
-                    // Start selection
                     let (x, y) = (mouse_event.column, mouse_event.row);
                     if let Some(coords) = mouse::get_text_coordinates(app.conversation_area, x, y) {
                         app.selection_range = Some((coords, coords));
                     }
                 }
                 MouseEventKind::Drag(_) => {
-                    // Update selection
                     if let Some((start, _)) = app.selection_range {
                         let (x, y) = (mouse_event.column, mouse_event.row);
                         if let Some(end) = mouse::get_text_coordinates(app.conversation_area, x, y) {
@@ -204,100 +156,24 @@ pub async fn handle_event(app: &mut App<'_>, event: Event, should_quit: &mut boo
                     }
                 }
                 MouseEventKind::Up(_) => {
-                    // End selection and copy
-                    if let Some(((start_line, start_char), (end_line, end_char))) = app.selection_range {
-                        // This is a simplified logic.
-                        // I need to get the actual text from the chat history.
-                        let mut selected_text = String::new();
-                        for (i, line) in app.chat_history.iter().enumerate() {
-                            if i >= start_line && i <= end_line {
-                                let start = if i == start_line { start_char } else { 0 };
-                                let end = if i == end_line { end_char } else { line.len() };
-                                if start < end {
-                                    selected_text.push_str(&line[start..end]);
-                                    selected_text.push('\n');
-                                }
-                            }
-                        }
-                        clipboard::copy_to_clipboard(selected_text).await;
-                        app.status_message = Some(("Copied selection to clipboard!".to_string(), Instant::now()));
-                    }
+                    // if let Some(((start_line, _), _)) = app.selection_range {
+                    //     // Reconstruct the rendered text to find the clicked line.
+                    //     // This is a temporary fix for the broken selection logic.
+                    //     let history_text: String = state.chat_history.join("\n");
+                    //     let markdown_text = termimad::MadSkin::default().term_text(&history_text).to_string();
+                    //     let rendered_lines: Vec<&str> = markdown_text.lines().collect();
+
+                    //     // The start_line is the screen line index.
+                    //     if let Some(line_to_copy) = rendered_lines.get(start_line) {
+                    //         clipboard::copy_to_clipboard(line_to_copy.to_string()).await;
+                    //         state.status_message = Some(("Copied line to clipboard!".to_string(), Instant::now()));
+                    //     }
+                    // }
                     app.selection_range = None;
                 }
-                _ => {} 
+                _ => {}
             }
         },
-        _ => {} 
-    }
-}
-
-
-pub async fn handle_llm_turn(
-    mut redis_conn: Option<redis::aio::MultiplexedConnection>,
-    current_history: Vec<String>,
-    model: String,
-    url: String,
-    lucius_context: Option<String>,
-    response_tx: mpsc::Sender<String>,
-) {
-    let mut messages_for_llm = current_history.clone();
-
-    loop {
-        match chat_stream(
-            messages_for_llm.clone(),
-            model.clone(),
-            url.clone(),
-            lucius_context.clone(),
-        )
-        .await
-        {
-            Ok(llm_response) => match llm_response {
-                LLMResponse::FinalResponse(response_text) => {
-                    if let Err(e) = response_tx.send(response_text).await {
-                        log::error!("Failed to send final LLM response to main thread: {}", e);
-                    }
-                    break;
-                }
-                LLMResponse::ToolCallDetected(tool_call) => {
-                    log::info!("Tool Call Detected: {:?}", tool_call);
-                    messages_for_llm.push(format!("Tool Call: {}", serde_json::to_string(&tool_call).unwrap_or_default()));
-
-                    if let Some(conn) = &mut redis_conn {
-                        match mcp::submit_task(conn, &tool_call).await {
-                            Ok(task_id) => {
-                                match mcp::poll_result(conn, &task_id).await {
-                                    Ok(result_str) => {
-                                        log::info!("Tool Result: {}", result_str);
-                                        messages_for_llm.push(format!("Tool Result: {}", result_str));
-                                    }
-                                    Err(e) => {
-                                        let err_msg = format!("Tool Error: {}", e);
-                                        log::error!("{}", err_msg);
-                                        messages_for_llm.push(format!("Tool Result: {}", err_msg));
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                let err_msg = format!("Tool Error: {}", e);
-                                log::error!("{}", err_msg);
-                                messages_for_llm.push(format!("Tool Result: {}", err_msg));
-                            }
-                        }
-                    } else {
-                        let no_mcp_msg = "Tool Call detected, but MCP Redis client is not connected.";
-                        log::error!("{}", no_mcp_msg);
-                        messages_for_llm.push(format!("Tool Result: {}", no_mcp_msg));
-                    }
-                }
-            },
-            Err(e) => {
-                let err_msg = format!("Error from chat stream: {}", e);
-                log::error!("{}", err_msg);
-                if let Err(send_err) = response_tx.send(err_msg).await {
-                    log::error!("Failed to send chat stream error to main thread: {}", send_err);
-                }
-                break;
-            }
-        }
+        _ => {}
     }
 }

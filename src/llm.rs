@@ -46,12 +46,12 @@ pub async fn chat_stream(
     }
 
     for msg in messages {
-        if msg.starts_with("You: ") {
-            ollama_messages.push(serde_json::json!({"role": "user", "content": msg.strip_prefix("You: ").unwrap()}));
-        } else if msg.starts_with("Lucius: ") {
-            ollama_messages.push(serde_json::json!({"role": "assistant", "content": msg.strip_prefix("Lucius: ").unwrap()}));
-        } else if msg.starts_with("Tool Result: ") {
-            ollama_messages.push(serde_json::json!({"role": "tool", "content": msg.strip_prefix("Tool Result: ").unwrap()}));
+        if let Some(content) = msg.strip_prefix("You: ") {
+            ollama_messages.push(serde_json::json!({"role": "user", "content": content}));
+        } else if let Some(content) = msg.strip_prefix("Lucius: ") {
+            ollama_messages.push(serde_json::json!({"role": "assistant", "content": content}));
+        } else if let Some(content) = msg.strip_prefix("Tool Result: ") {
+            ollama_messages.push(serde_json::json!({"role": "tool", "content": content}));
         } else if msg.starts_with("Tool Call: ") {
             ollama_messages.push(serde_json::json!({"role": "assistant", "content": msg}));
         }
@@ -86,6 +86,7 @@ pub async fn chat_stream(
                     }
                 }
                 if chat_res["done"].as_bool().unwrap_or(false) {
+                    log::info!("Full response from LLM: {}", full_response);
                     return Ok(LLMResponse::FinalResponse(full_response));
                 }
             } else {
